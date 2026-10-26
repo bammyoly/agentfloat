@@ -1,120 +1,54 @@
 # ===========================================================================
-# Render blueprint — the AgentFloat gateway as a web service.
-#
-#   https://render.com/docs/blueprint-spec
-#
-# HOW TO USE IT
-#   1. Push this repo to GitHub/GitLab.
-#   2. Render -> New -> Blueprint -> pick the repo. Render finds this file and
-#      creates the service, the disk and every environment variable below.
-#   3. Fill in the three `sync: false` secrets in the Render dashboard. They are
-#      deliberately NOT in this file: a blueprint is committed, and two of them
-#      are keys that hold money.
-#   4. Give the frontend the gateway's URL as VITE_GATEWAY_URL, and give the
-#      gateway the frontend's domain as GATEWAY_ALLOWED_ORIGINS. Each needs the
-#      other's address, so one of the two deploys happens twice. See
-#      DEPLOYMENT-BRIEF.md section 15 for the order that avoids guessing.
-#
-# WHY A WEB SERVICE AND NOT A SERVERLESS FUNCTION
-#   The gateway holds a private key in memory, long-polls Telegram, keeps an
-#   in-process receipt ledger and runs a watcher on a timer. Vercel/Lambda-style
-#   functions are per-request and stateless, so all four would break. Render (or
-#   any container host / small VPS) is the right shape.
-#
-# THE DISK IS NOT OPTIONAL IF YOU CARE ABOUT STATE
-#   Render's filesystem is ephemeral: without this disk every deploy and restart
-#   wipes the faucet cooldowns, the gas-drip caps, the self-service budget audit
-#   trail and every Telegram binding. A restart would become a way to claim the
-#   faucet again. STATE_DIR points the four *-state.json files at the mount.
-#   Free-tier services cannot attach a disk — on the free tier, expect the reset.
+# Render blueprint — AgentFloat gateway web service (Free Tier)
 # ===========================================================================
 
 services:
   - type: web
     name: agentfloat-gateway
     runtime: node
-    # Node 20 LTS matches what this repo is developed and tested against.
-    nodeVersion: "20"
-    plan: starter
+    plan: free
     region: frankfurt
-    # The whole repo, not `server/`: the gateway reads the deployment artifacts
-    # from ../frontend/src/contracts (addresses, ABI, chain config) and those
-    # are committed to the frontend's source tree.
     rootDir: .
-    # Only the gateway's own dependencies. `npm run install-all` would install
-    # Hardhat and the entire React toolchain on a box that runs neither, and the
-    # frontend build belongs to Vercel.
     buildCommand: npm --prefix server install
     startCommand: npm --prefix server start
-    # Render's free tier spins a service down after ~15 minutes with no traffic
-    # and the next request pays a 30-60s cold start — which lands in the middle
-    # of a judge's demo. The starter plan does not sleep. If you stay on free,
-    # point any uptime pinger at the health check path below.
     numInstances: 1
     healthCheckPath: /api/health
-    # Fail fast and loudly rather than serving a gateway that cannot sign.
     autoDeploy: true
 
-    disk:
-      name: agentfloat-state
-      mountPath: /var/data
-      sizeGB: 1
-
     envVars:
-      # --- bind: a PaaS proxies to 0.0.0.0 and injects PORT ----------------
+      - key: NODE_VERSION
+        value: "20"
+
+      # --- bind: PaaS proxies to 0.0.0.0 and injects PORT ------------------
       - key: GATEWAY_HOST
         value: 0.0.0.0
-      # PORT is injected by Render itself; the gateway prefers it over
-      # GATEWAY_PORT, so neither needs to be set here.
 
-      # --- secrets: set these in the dashboard, never in this file ----------
-      # A THROWAWAY agent key holding about 1 MUSD. Render shows env vars to
-      # everyone with dashboard access, so this must not be the treasury owner's
-      # key or any key that holds the BTC gas reserve.
+      # --- secrets: set these in the dashboard prompt -----------------------
       - key: AGENT_PRIVATE_KEY
         sync: false
-      # The receipt signer. On testnet the deployer key doubles as the treasury
-      # owner, which is what makes self-service caps, the faucet and the gas drip
-      # work. Give it a little BTC for gas.
       - key: GATEWAY_SIGNER_PRIVATE_KEY
         sync: false
-      # Locks /api/pause and /api/unpause. Without it, anyone who finds the URL
-      # can pause a live demo with one unauthenticated POST.
       - key: GATEWAY_ADMIN_TOKEN
         sync: false
 
-      # --- who may call this from a browser ---------------------------------
-      # The frontend's origin. Use the wildcard form while the domain is still
-      # settling, then tighten it to the exact origin. Loopback is always
-      # allowed, so local development needs nothing set at all.
+      # --- CORS: who may call this gateway from a browser -------------------
       - key: GATEWAY_ALLOWED_ORIGINS
         value: https://*.vercel.app
 
-      # --- where the four *-state.json files live ---------------------------
-      - key: STATE_DIR
-        value: /var/data
-
-      # --- chain + seller ----------------------------------------------------
+      # --- chain + seller configuration -------------------------------------
       - key: SELLER_PRICE
         value: $0.001
-      # Where the built-in demo seller's MUSD lands. MUST be set explicitly in
-      # production: the x402 middleware silently falls back to Mezo's hosted
-      # demo address otherwise, so payments "work" while your merchant receives
-      # nothing.
       - key: SELLER_PAY_TO
         sync: false
       - key: FACILITATOR_URL
         value: https://facilitator.vativ.io
 
-      # --- optional features, off unless configured -------------------------
+      # --- optional features ------------------------------------------------
       - key: TELEGRAM_BOT_TOKEN
         sync: false
       - key: TELEGRAM_BOT_USERNAME
         sync: false
-      # Endpoint prefixes the agent may pay. Empty means any public https URL,
-      # still subject to the on-chain caps.
       - key: ALLOWED_ENDPOINTS
         sync: false
-      # How many of the treasury's receipts are read to sum today's spend.
       - key: DAILY_SPEND_LOOKBACK
         value: "300"
