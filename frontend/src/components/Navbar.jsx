@@ -56,10 +56,10 @@ const PUBLIC_LINKS = [
 const APP_LINKS = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { to: "/faucet", label: "Faucet", icon: Faucet },
+  { to: "/operate", label: "Operate", icon: Gauge },
   { to: "/spend", label: "Spend", icon: PlugZap },
   { to: "/ledger", label: "Ledger", icon: Activity },
   { to: "/alerts", label: "Alerts", icon: Bell },
-  { to: "/operate", label: "Operate", icon: Gauge },
 ];
 
 export default function Navbar({ health }) {
