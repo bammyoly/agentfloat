@@ -1,0 +1,44 @@
+{
+  "name": "agentfloat",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Budget-controlled MUSD wallet for AI agents on Mezo — x402 payments with on-chain spending caps.",
+  "scripts": {
+    "//install-all": "Installs every workspace. Run this once after cloning.",
+    "install-all": "npm --prefix contract install && npm --prefix server install && npm --prefix frontend install && npm install",
+    "//install-all-windows": "If `npm --prefix ... install` puts node_modules in the wrong place on your machine, install each workspace by hand instead: cd contract && npm install && cd ../server && npm install && cd ../frontend && npm install && cd .. && npm install",
+
+    "//dev": "Gateway (127.0.0.1:4022) + dashboard (http://localhost:5173) together. ROOT-ONLY SCRIPT: cd into server/ and `npm run dev` gives 'Missing script: dev'. Equivalent by hand in two terminals: (1) cd server && npm start   (2) cd frontend && npm run dev. Open http://localhost:5173 -- NOT the LAN IP, which is not a secure context and breaks Privy and wallet extensions.",
+    "dev": "concurrently -n gateway,web -c yellow,cyan \"npm run gateway\" \"npm run web\"",
+    "//dev:lan": "Same as dev, but the dashboard listens on 0.0.0.0 for tunnels and hosted previews.",
+    "dev:lan": "concurrently -n gateway,web -c yellow,cyan \"npm run gateway\" \"npm run web:lan\"",
+    "gateway": "npm --prefix server start",
+    "//web": "Binds 127.0.0.1 only. That is deliberate: http://localhost:5173 is a SECURE CONTEXT, so WebCrypto (crypto.randomUUID) and injected wallets work. Open the printed LAN URL instead and Privy breaks.",
+    "web": "npm --prefix frontend run dev",
+    "//web:lan": "Binds 0.0.0.0 for tunnels and hosted previews. Anyone on your LAN can then reach the dashboard and, through its /api proxy, the agent wallet -- do not use this on an untrusted network.",
+    "web:lan": "npm --prefix frontend run dev -- --host 0.0.0.0",
+
+    "//contract": "Hardhat tasks. Always the LOCAL binary — `npx hardhat` downloads 3.x, which rejects Node 20.",
+    "check-env": "npm --prefix contract run hh -- run scripts/check-env.js --network mezoTestnet",
+    "deploy": "npm --prefix contract run hh -- run scripts/deploy.js --network mezoTestnet",
+    "setup-agent": "npm --prefix contract run hh -- run scripts/setup-agent.js --network mezoTestnet",
+    "//resume": "Undo an EMERGENCY STOP from the CLI (no MetaMask needed): unpause the treasury and release float back to the agent.",
+    "resume": "npm --prefix contract run resume",
+    "test": "npm --prefix contract run hh -- test",
+    "//test:gateway": "Offline tests for the gateway modules added in Wave 1: the x402 relay's SSRF guard, self-service budget ceilings and signature verification, and the Telegram alert renderer. No chain, no bot token, no network.",
+    "test:gateway": "npm --prefix server run test:gateway",
+    "//test:deploy": "Boots the real gateway in deployed mode (0.0.0.0, allowlist, admin token) and HTTP-tests the things that only break on a PaaS: CORS, the pause lock, PORT/HOST, expose headers. No chain writes, spends nothing.",
+    "test:deploy": "npm --prefix server run test:deploy",
+    "//test:browser": "Offline tests for the browser-only code paths: the wallet network state machine, the x402 signer/header logic, and the Permit2 approval. No browser needed.",
+    "test:browser": "npm --prefix frontend run test:network && npm --prefix frontend run test:x402 && npm --prefix frontend run test:permit2 && npm --prefix frontend run test:autopay && npm --prefix frontend run test:charts",
+    "//test:relay": "LIVE: spends 0.001 MUSD proving the relay end to end. Needs `npm run gateway` in another terminal and a funded, registered agent wallet in server/.env.",
+    "test:relay": "npm --prefix server run test:relay",
+    "//test:onboarding": "LIVE: the whole new-user walk — faucet, gas drip, Permit2 approval, first payment. Spends 10 MUSD + 0.00005 BTC + 0.001 MUSD and registers a throwaway agent. Needs `npm run gateway`.",
+    "test:onboarding": "npm --prefix server run test:onboarding",
+    "//test:autopay:live": "LIVE: automated spending against the chain — self-service caps, the predicted refusal, and a loop that stops itself. Spends 10 MUSD + 0.00005 BTC + 0.005 MUSD. Needs `npm run gateway`.",
+    "test:autopay:live": "npm --prefix server run test:autopay:live"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}

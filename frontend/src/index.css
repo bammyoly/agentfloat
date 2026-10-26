@@ -1,0 +1,613 @@
+/* ===========================================================================
+   AgentFloat — Tailwind v4 design system
+
+   Minimalist dark treasury console. The palette is carried over from the
+   original hand-written stylesheet so the product keeps its identity.
+
+   No external fonts or CDNs: everything renders offline, which matters because
+   the in-app preview is a sandboxed iframe with no network access for assets.
+
+   Tailwind v4 has no tailwind.config.js — tokens are declared here in @theme,
+   which generates the utilities (bg-panel, text-muted, border-line, …).
+
+   ---------------------------------------------------------------------------
+   TYPE SCALE — READ THIS BEFORE ADDING ANOTHER text-[Npx]
+   ---------------------------------------------------------------------------
+   This app used to set almost everything between 10px and 13px. On a laptop
+   that is a squint, on a projector in a judging room it is invisible, and it
+   reads as an internal tool rather than a product. The scale is now:
+
+     11px   micro      table headers, uppercase eyebrows, metadata nobody acts on
+     12px   caption    hints under a field, secondary rows in a definition list
+     13px   small      badges, dense tables, nav on small screens
+     14px   body       THE DEFAULT. Paragraphs, notes, field labels, table cells
+     15px   lead       a card's opening sentence, an important note
+     17px   title      card headings, section headings
+     20px   page       the page title
+     28px   stat       a number the page is about
+     36px   hero       the one number on the page (the float)
+
+   Anything below 11px is now a smell. `text-[10px]` and `text-[9.5px]` survived
+   in earlier revisions and were the single biggest reason the UI felt cramped.
+
+   CONTRAST. --color-dim used to be #616c7e, which is about 4.0:1 on a panel —
+   under WCAG AA for body text, and it was used for exactly that (hints, table
+   headers, the small print under a stat). It is now #93a0b4 (~7.7:1). --color-muted
+   went from #8b96a8 to #a6b2c3 (~9.4:1). Neither is "brighter for fun": both were
+   carrying real information at a level people had to lean in for.
+   =========================================================================== */
+
+@import "tailwindcss";
+
+@theme {
+  /* surfaces */
+  --color-ink: #080a10;
+  /* Darkest inset. Used for wells *inside* a card (cap grids, progress
+     tracks, skeleton blocks) so a nested surface reads as recessed against
+     --color-panel without introducing a second panel tone. */
+  --color-ink-dim: #0a0d14;
+  --color-ink-soft: #0e1119;
+  --color-panel: #12161f;
+  --color-panel-2: #171c27;
+  --color-line: #2a3242;
+  --color-line-soft: #1e2531;
+
+  /* type — see the contrast note in the header before darkening any of these */
+  --color-text: #eef2f8;
+  --color-muted: #a6b2c3;
+  --color-dim: #93a0b4;
+  /* The faintest tier, for rules and separators that must not read as content.
+     Not for text: at 3.2:1 it fails AA and it is only here so a border can be
+     quieter than --color-line. */
+  --color-faint: #6c7a90;
+
+  /* semantic */
+  --color-btc: #f7931a;
+  --color-ok: #3ddc88;
+  --color-ok-dim: #12351f;
+  --color-bad: #ff6b6b;
+  --color-bad-dim: #3a1414;
+  --color-warn: #ffbe3d;
+  --color-warn-dim: #3a2a08;
+  --color-info: #6aa8ff;
+  --color-info-dim: #12233d;
+  --color-accent: #b49aff;
+
+  --radius-card: 14px;
+
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+}
+
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  /* The canvas colour lives in index.html's <html> start tag as well, on
+     purpose: a presentation hint there is applied while parsing, before this
+     stylesheet exists, so frame one is dark. Without it a dark app flashes
+     white at the top, left and right of the boot screen for a few frames —
+     the document behind the boot rectangle was the UA default white. */
+  html {
+    background-color: var(--color-ink);
+    color-scheme: dark;
+  }
+
+  body {
+    margin: 0;
+    background-color: var(--color-ink);
+    /* Two very soft washes so the dark background is not flat. Kept subtle —
+       this is a console, not a marketing page. */
+    background-image:
+      radial-gradient(1200px 600px at 80% -10%, rgba(247, 147, 26, 0.07), transparent 60%),
+      radial-gradient(900px 500px at 0% 0%, rgba(106, 168, 255, 0.05), transparent 55%);
+    background-attachment: fixed;
+    color: var(--color-text);
+    font-family: var(--font-sans);
+    /* 15px, not the browser's 16px and not this app's old 14px: dense enough for
+       a console with tables in it, large enough to read across a room. Every
+       component size below is derived from this. */
+    font-size: 15px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* Numbers and addresses should not jitter as they change. */
+  .tnum {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Keyboard focus, globally. A dark UI with no visible focus ring is unusable
+     without a mouse, and `outline: none` (which the old .input effectively did
+     by only changing its border) is the classic way that happens. Every
+     interactive element gets the same ring; components may add to it, never
+     remove it. */
+  :focus-visible {
+    outline: 2px solid var(--color-info);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  /* Scrollbars, so a dark console does not get a white OS scrollbar. */
+  * {
+    scrollbar-color: var(--color-line) transparent;
+    scrollbar-width: thin;
+  }
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background-color: var(--color-line);
+    border-radius: 999px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: var(--color-faint);
+  }
+
+  ::selection {
+    background-color: rgba(247, 147, 26, 0.3);
+    color: var(--color-text);
+  }
+}
+
+@layer components {
+  /* --- surfaces -------------------------------------------------------- */
+  .card {
+    @apply rounded-[14px] border border-line bg-panel;
+    /* A 1px inner highlight at the top is what makes a flat dark panel read as
+       a surface rather than a hole. Cheaper than a second background token. */
+    box-shadow:
+      inset 0 1px 0 0 rgba(255, 255, 255, 0.035),
+      0 12px 32px -20px rgba(0, 0, 0, 0.9);
+  }
+
+  .card-pad {
+    @apply rounded-[14px] border border-line bg-panel p-5;
+    box-shadow:
+      inset 0 1px 0 0 rgba(255, 255, 255, 0.035),
+      0 12px 32px -20px rgba(0, 0, 0, 0.9);
+  }
+
+  /* --- nav ------------------------------------------------------------- */
+  .nav-link {
+    @apply cursor-pointer rounded-md px-3 py-2 text-[14px] font-medium text-muted transition-colors
+           hover:bg-panel-2 hover:text-text;
+  }
+
+  .nav-link-active {
+    @apply bg-panel-2 text-text;
+  }
+
+  /* --- buttons --------------------------------------------------------- */
+  .btn {
+    /* cursor-pointer is explicit: Tailwind v4's preflight dropped the v3 rule
+       that gave every <button> a pointer, so without it buttons read as inert. */
+    @apply inline-flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-line
+           bg-panel-2 px-4 py-2.5 text-[14px] font-medium text-text transition-all
+           hover:border-faint hover:bg-[#1c2230] active:translate-y-px
+           disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:translate-y-0;
+  }
+
+  .btn-primary {
+    @apply border-btc/50 bg-btc/15 text-btc hover:border-btc hover:bg-btc/25;
+    box-shadow: 0 6px 20px -10px rgba(247, 147, 26, 0.7);
+  }
+
+  .btn-danger {
+    @apply border-bad/45 bg-bad/12 text-bad hover:border-bad hover:bg-bad/22;
+  }
+
+  .btn-ghost {
+    @apply border-transparent bg-transparent text-muted hover:bg-panel-2 hover:text-text;
+  }
+
+  .btn-sm {
+    @apply gap-1.5 px-3 py-1.5 text-[13px];
+  }
+
+  .btn-lg {
+    @apply gap-2.5 px-5 py-3 text-[15px];
+  }
+
+  /* Full-width button, for the mobile stacks and modal footers. */
+  .btn-block {
+    @apply w-full;
+  }
+
+  /* --- form ------------------------------------------------------------ */
+  .input {
+    @apply w-full rounded-lg border border-line bg-ink-soft px-3.5 py-2.5 font-mono text-[14px]
+           text-text transition-colors placeholder:text-faint
+           hover:border-faint focus:border-info;
+    /* No `outline-none`. The global :focus-visible ring stays, and the border
+       colour change is a second cue on top of it. */
+  }
+
+  .label {
+    @apply mb-2 block text-[13px] font-medium text-muted;
+  }
+
+  /* --- badges ---------------------------------------------------------- */
+  .badge {
+    @apply inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1
+           text-[12px] font-medium whitespace-nowrap;
+  }
+
+  .badge-ok {
+    @apply border-ok/35 bg-ok-dim text-ok;
+  }
+  .badge-bad {
+    @apply border-bad/35 bg-bad-dim text-bad;
+  }
+  .badge-warn {
+    @apply border-warn/35 bg-warn-dim text-warn;
+  }
+  .badge-info {
+    @apply border-info/35 bg-info-dim text-info;
+  }
+  .badge-neutral {
+    @apply border-line bg-panel-2 text-muted;
+  }
+  .badge-btc {
+    @apply border-btc/35 bg-btc/12 text-btc;
+  }
+
+  /* --- data display ---------------------------------------------------- */
+  .stat-label {
+    @apply text-[11.5px] font-medium tracking-[0.06em] text-dim uppercase;
+  }
+
+  .stat-value {
+    /* Inlined rather than `@apply tnum` — Tailwind v4's @apply only accepts
+       registered utilities, not custom classes, and .tnum is plain CSS. */
+    font-variant-numeric: tabular-nums;
+    @apply mt-1.5 text-[28px] leading-tight font-semibold tracking-tight text-text;
+  }
+
+  .th {
+    @apply px-3.5 py-2.5 text-left text-[11.5px] font-semibold tracking-[0.06em] text-dim uppercase;
+  }
+
+  .td {
+    @apply border-t border-line-soft px-3.5 py-3 text-[14px] align-middle;
+  }
+
+  /* --- prose-ish ------------------------------------------------------- */
+  .note {
+    @apply rounded-lg border border-line-soft bg-ink-soft px-4 py-3.5 text-[14px]
+           leading-relaxed text-muted;
+  }
+
+  .note-ok {
+    @apply border-ok/30 bg-ok-dim/60 text-ok;
+  }
+  .note-bad {
+    @apply border-bad/30 bg-bad-dim/60 text-bad;
+  }
+  .note-warn {
+    @apply border-warn/30 bg-warn-dim/60 text-warn;
+  }
+  /* The tone classes above recolour the whole note. Body copy inside one still
+     needs to be readable, so a note's paragraphs opt back into muted. */
+  .note p {
+    @apply text-muted;
+  }
+  .note b,
+  .note strong {
+    @apply font-semibold text-text;
+  }
+
+  .code {
+    @apply rounded bg-ink-soft px-1.5 py-0.5 font-mono text-[13px] text-info;
+  }
+
+  .pre {
+    @apply overflow-x-auto rounded-lg border border-line bg-ink-soft p-3.5
+           font-mono text-[13px] leading-relaxed text-muted;
+  }
+
+  /* A row of label/value pairs — the definition lists this app is full of. */
+  .dl {
+    @apply grid grid-cols-[auto_1fr] gap-x-5 gap-y-2.5 text-[14px];
+  }
+  .dl dt {
+    @apply text-dim;
+  }
+  .dl dd {
+    @apply text-right text-text;
+  }
+}
+
+@layer utilities {
+  /* --- ring spinner ----------------------------------------------------
+     Used by lib/RingSpinner.jsx for every "work in progress" state, including
+     the boot screen shown while a wallet provider loads. Its own keyframes
+     rather than Tailwind's animate-spin so the reduced-motion block below can
+     name it explicitly. */
+  .ring-spin {
+    animation: ring-spin 0.9s linear infinite;
+    transform-origin: 50% 50%;
+  }
+
+  @keyframes ring-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  .pulse-dot {
+    animation: pulse-dot 1.6s ease-in-out infinite;
+  }
+
+  @keyframes pulse-dot {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.35;
+    }
+  }
+
+  /* --- scroll reveal ----------------------------------------------------
+     Driven by lib/useReveal.js (IntersectionObserver). Elements start
+     translated and transparent, then settle once they enter the viewport.
+     Purely decorative: the fallback below makes everything visible if the
+     observer never runs, so content is never stranded off-screen.        */
+  .reveal {
+    opacity: 0;
+    transform: translateY(18px);
+    transition:
+      opacity 0.7s cubic-bezier(0.22, 1, 0.36, 1),
+      transform 0.7s cubic-bezier(0.22, 1, 0.36, 1);
+    transition-delay: var(--reveal-delay, 0ms);
+    will-change: opacity, transform;
+  }
+
+  .reveal-in {
+    opacity: 1;
+    transform: none;
+  }
+
+  /* --- entrance animations (no scroll needed) --------------------------- */
+  .animate-rise {
+    animation: rise 0.8s cubic-bezier(0.22, 1, 0.36, 1) both;
+    animation-delay: var(--reveal-delay, 0ms);
+  }
+
+  @keyframes rise {
+    from {
+      opacity: 0;
+      transform: translateY(22px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+
+  .animate-fade {
+    animation: fade 1s ease both;
+    animation-delay: var(--reveal-delay, 0ms);
+  }
+
+  @keyframes fade {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+
+  /* --- decorative motion ------------------------------------------------ */
+  .animate-float {
+    animation: float 7s ease-in-out infinite;
+  }
+
+  @keyframes float {
+    0%,
+    100% {
+      transform: translateY(0);
+    }
+    50% {
+      transform: translateY(-9px);
+    }
+  }
+
+  /* Sheen that travels across a filled bar — used by the treasury "budget
+     deployed" meter so a live number reads as live. */
+  .animate-shimmer {
+    background-image: linear-gradient(
+      100deg,
+      transparent 20%,
+      rgba(255, 255, 255, 0.28) 50%,
+      transparent 80%
+    );
+    background-size: 220% 100%;
+    animation: shimmer 2.2s linear infinite;
+  }
+
+  @keyframes shimmer {
+    from {
+      background-position: 120% 0;
+    }
+    to {
+      background-position: -120% 0;
+    }
+  }
+
+  /* Slow sweep across the hero rule, so the page is never perfectly static. */
+  .animate-sweep {
+    background-size: 200% 100%;
+    animation: sweep 9s linear infinite;
+  }
+
+  @keyframes sweep {
+    from {
+      background-position: 0% 0;
+    }
+    to {
+      background-position: -200% 0;
+    }
+  }
+
+  /* Charts draw themselves once on mount. A stroke that grows is the one bit of
+     motion that makes a static SVG read as live data. */
+  .animate-draw {
+    stroke-dasharray: var(--draw-len, 1000);
+    stroke-dashoffset: var(--draw-len, 1000);
+    animation: draw 1.1s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  }
+
+  @keyframes draw {
+    to {
+      stroke-dashoffset: 0;
+    }
+  }
+
+  .animate-grow {
+    transform-origin: 50% 100%;
+    animation: grow 0.7s cubic-bezier(0.22, 1, 0.36, 1) both;
+    animation-delay: var(--reveal-delay, 0ms);
+  }
+
+  @keyframes grow {
+    from {
+      transform: scaleY(0.02);
+      opacity: 0.4;
+    }
+    to {
+      transform: none;
+      opacity: 1;
+    }
+  }
+
+  /* --- landing-page surfaces -------------------------------------------- */
+  .text-gradient {
+    background-image: linear-gradient(100deg, #f7931a 0%, #ffd08a 45%, #b49aff 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  /* Faint engineering grid, masked out toward the edges. */
+  .hero-grid {
+    background-image:
+      linear-gradient(to right, rgba(147, 160, 180, 0.07) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(147, 160, 180, 0.07) 1px, transparent 1px);
+    background-size: 56px 56px;
+    -webkit-mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, #000 40%, transparent 100%);
+    mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, #000 40%, transparent 100%);
+  }
+
+  .glow-btc {
+    box-shadow: 0 0 0 1px rgba(247, 147, 26, 0.14), 0 18px 60px -24px rgba(247, 147, 26, 0.4);
+  }
+
+  .lift {
+    transition:
+      transform 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+      border-color 0.28s ease,
+      background-color 0.28s ease,
+      box-shadow 0.28s ease;
+  }
+
+  .lift:hover {
+    transform: translateY(-3px);
+    border-color: var(--color-faint);
+    background-color: var(--color-panel-2);
+    box-shadow: 0 20px 40px -28px rgba(0, 0, 0, 1);
+  }
+
+  /* --- landing-page type ------------------------------------------------ */
+  .display {
+    font-size: clamp(2.3rem, 5.4vw, 4.1rem);
+    line-height: 1.06;
+    letter-spacing: -0.03em;
+    font-weight: 650;
+  }
+
+  .display-sm {
+    font-size: clamp(1.7rem, 3.4vw, 2.5rem);
+    line-height: 1.14;
+    letter-spacing: -0.025em;
+    font-weight: 620;
+  }
+
+  .lede {
+    font-size: clamp(1.02rem, 1.5vw, 1.2rem);
+    line-height: 1.7;
+    color: var(--color-muted);
+  }
+
+  .eyebrow {
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--color-btc);
+  }
+
+  .rule-sweep {
+    height: 1px;
+    background-image: linear-gradient(
+      90deg,
+      transparent,
+      rgba(247, 147, 26, 0.55),
+      rgba(180, 154, 255, 0.45),
+      transparent
+    );
+  }
+}
+
+/* Accessibility: honour the OS setting. Every animation above is decorative,
+   so collapsing them to a plain fade loses nothing and stops vestibular
+   discomfort. The reveal states still resolve to visible, and a chart still
+   renders fully drawn. */
+@media (prefers-reduced-motion: reduce) {
+  .reveal,
+  .animate-rise,
+  .animate-fade,
+  .animate-float,
+  .animate-sweep,
+  .animate-shimmer,
+  .animate-draw,
+  .animate-grow,
+  .pulse-dot,
+  .ring-spin,
+  .lift {
+    animation: none !important;
+    transition: none !important;
+    transform: none !important;
+    opacity: 1 !important;
+  }
+  /* Without this the drawn-in stroke keeps its dash offset and the line
+     disappears entirely — the reduced-motion block would hide data. */
+  .animate-draw {
+    stroke-dashoffset: 0 !important;
+  }
+}
+
+/* If JS never runs the observer (or a crawler renders this), do not leave the
+   page invisible. Applied by lib/useReveal.js only when it is active. */
+html:not(.js-reveal) .reveal {
+  opacity: 1;
+  transform: none;
+}

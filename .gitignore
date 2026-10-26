@@ -1,0 +1,49 @@
+# --- secrets: never commit these -------------------------------------------
+.env
+.env.local
+.env.*.local
+contract/.env
+server/.env
+frontend/.env
+
+# --- keys / wallets --------------------------------------------------------
+*.key
+*.pem
+wallet.json
+agent-wallet.json
+secrets/
+
+# --- node / build ----------------------------------------------------------
+node_modules/
+dist/
+build/
+.vite/
+coverage/
+
+# --- hardhat ---------------------------------------------------------------
+contract/artifacts/
+contract/cache/
+contract/typechain-types/
+
+# --- generated deployment artifacts ---------------------------------------
+# These ARE committed in real projects so the frontend can build; they contain
+# only public addresses and ABIs. Uncomment if you would rather regenerate them.
+# frontend/src/contracts/deployment.json
+# frontend/src/contracts/agents.json
+
+# --- misc ------------------------------------------------------------------
+.DS_Store
+*.log
+npm-debug.log*
+
+# Faucet claim ledger (per-address cooldowns + distributed totals)
+server/faucet-state.json
+
+# Self-service budget audit trail (who changed which caps, and the tx hash)
+server/limits-state.json
+
+# Telegram subscriptions. Contains chat ids and bot bindings — other people's
+# personal data, so it is never committed even though it holds no key.
+server/telegram-state.json
+server/gas-state.json
+WALKTHROUGH.md

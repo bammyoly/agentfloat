@@ -1,0 +1,62 @@
+{
+  "name": "agentfloat-frontend",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "AgentFloat dashboard — budget-controlled MUSD payments for AI agents on Mezo",
+  "scripts": {
+    "dev": "vite",
+    "//build": "Invokes node directly with a larger heap rather than `NODE_OPTIONS=... vite build`, which does not work in Windows cmd/PowerShell. Privy + WalletConnect + the x402 SDK make the dependency graph big enough to exhaust the default ~1GB old-space during Rollup.",
+    "build": "node --max-old-space-size=4096 node_modules/vite/bin/vite.js build",
+    "preview": "vite preview",
+    "//check:deps": "Crawls the module graph Vite is actually serving and fails if any CommonJS file is reaching the browser raw — the cause of 'does not provide an export named default' from Privy. Run it after bumping @privy-io/* or @x402/*. Needs the dev server running.",
+    "check:deps": "node scripts/check-browser-deps.mjs",
+    "//check:privy": "Queries Privy for the live app config behind VITE_PRIVY_APP_ID and asserts the four things AgentFloat needs: embedded wallets created on login, smart wallets OFF, the right login methods enabled, and localhost in allowed_domains. Diagnoses a modal that opens and silently closes.",
+    "check:privy": "node scripts/check-privy-config.mjs",
+    "//check:client": "Greps THIS machine's frontend source for known-stale patterns — StrictMode in main.jsx, double createRoot, un-nested createOnLogin, usePrivy().login. Built because files are copied by hand, and a stale main.jsx looks exactly like a broken Privy modal.",
+    "check:client": "node scripts/check-client-integrity.mjs",
+    "//test:network": "Unit tests for the wallet network switch/add state machine against a fake EIP-1193 provider. Runs in plain Node — no browser, no build.",
+    "test:network": "node scripts/test-evm-network.mjs",
+    "//test:x402": "Offline tests for the BROWSER half of an x402 payment: the signer shape the scheme requires, the protocol-version header name (v1 X-PAYMENT vs v2 PAYMENT-SIGNATURE), and offer parsing for both versions. Fake EIP-1193 provider, stubbed fetch — no browser, no Privy, no network.",
+    "test:x402": "node scripts/test-x402-browser.mjs",
+    "//test:permit2": "Offline tests for the Permit2 approval a user signs from the browser: the two choices (exact amount vs unlimited), the calldata, sending through the raw provider with no gas fields, and confirming by polling the allowance instead of tx.wait(). Fake EIP-1193 provider, injected reader — no browser, no chain.",
+    "test:permit2": "node scripts/test-permit2.mjs",
+    "//test:autopay": "OFFLINE: the automated-spending state machine — schedule clamping, run classification, what actually moved, when the loop must stop, and which run a cap refuses. No browser, wallet or chain needed.",
+    "test:autopay": "node scripts/test-autopay.mjs",
+    "//test:charts": "Offline tests for the chart arithmetic in src/lib/charts-data.js: the UTC day boundary, kept-empty buckets, BigInt sums that survive unsummable records, and a cross-check that the frontend buckets a receipt into the same day server/spend.js counts it toward the cap.",
+    "test:charts": "node scripts/test-charts.mjs",
+    "//test:auth": "OFFLINE: the sign-in failure copy. Asserts that a person closing the login popup is reported as a dismissal and not a failure, that no maintainer vocabulary (npm run, VITE_, iframe, status.privy.com) reaches the user-facing sentence for any code, that the technical detail still exists behind a disclosure, and that every tone the classifier emits is one the toast can render. Also drives the DOM probe with a fake document to prove it detects a double-mounted provider. No browser, no network, no .env.",
+    "test:auth": "node scripts/test-auth-errors.mjs",
+    "//gateway": "The gateway now lives at the repo root (../server). Its .env is loaded by absolute path, so cwd does not matter.",
+    "gateway": "node ../server/agent-gateway.js",
+    "dev:all": "concurrently -n gateway,web -c yellow,cyan \"npm run gateway\" \"npm run dev\""
+  },
+  "dependencies": {
+    "@privy-io/react-auth": "^3.51.0",
+    "@reown/appkit": "^1.8.24",
+    "@reown/appkit-adapter-ethers": "^1.8.24",
+    "@x402/core": "^2.28.0",
+    "@x402/evm": "^2.28.0",
+    "@x402/fetch": "^2.28.0",
+    "ethers": "^6.17.0",
+    "lucide-react": "^1.61.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^7.18.4",
+    "viem": "^2.57.11"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.1.2",
+    "tailwindcss": "^4.3.3",
+    "vite": "^5.4.11"
+  },
+  "//gateway-deps": "The agent gateway lives at ../server (repo root) and has its own package.json, so the x402 SDK — which pulls a heavy Solana transitive tree — never touches the React build. Install it with: cd ../server && npm install",
+  "//overrides": "If you install the x402 SDK here instead, add an override for @solana/kit to 6.9.0 — v6.10.0 references unpublished sub-packages and breaks install. See DEPLOYMENT-BRIEF.md §6.",
+  "//privy": "Set VITE_PRIVY_APP_ID in frontend/.env to enable Google/email login. Without it the app runs in operator-wallet mode only and the login button explains why.",
+  "overrides": {
+    "@solana/kit": "6.9.0"
+  },
+  "//x402-in-browser": "Signed-in users pay from their OWN Privy wallet in the browser, so the x402 client SDK is bundled here too. That pulls a heavy Solana transitive tree; the override above pins @solana/kit to a version that installs."
+}

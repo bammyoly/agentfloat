@@ -1,0 +1,21 @@
+{
+  "contractName": "AgentFloatTreasury",
+  "address": "0xf10e9DdFB2aE67604f230b7CE4A1A560268EDf79",
+  "deployTx": "0x6292eb5934627453328f36b63477bd39692434f920b2a28802ad0040d173a05b",
+  "blockNumber": 16278029,
+  "deployedAt": "2026-10-21T09:37:08.501Z",
+  "deployer": "0x76233C3D6c4D1A715Acad5D83031E686b2a88349",
+  "owner": "0x76233C3D6c4D1A715Acad5D83031E686b2a88349",
+  "version": "1.0.0",
+  "chainId": 31611,
+  "network": "Mezo Testnet",
+  "seededMusd": "0",
+  "solidity": {
+    "version": "0.8.28",
+    "evmVersion": "london",
+    "optimizer": {
+      "enabled": true,
+      "runs": 200
+    }
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "name": "agentfloat-contracts",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AgentFloat — budget-controlled MUSD treasury for AI agents on Mezo (testnet chain 31611)",
+  "scripts": {
+    "compile": "hardhat compile",
+    "test": "hardhat test",
+    "node": "hardhat node",
+    "hh": "hardhat",
+    "deploy:testnet": "hardhat run scripts/deploy.js --network mezoTestnet",
+    "deploy:local": "hardhat run scripts/deploy.js --network hardhat",
+    "agent:new": "hardhat run scripts/setup-agent.js --network mezoTestnet",
+    "treasury:fund": "hardhat run scripts/fund-treasury.js --network mezoTestnet",
+    "verify:env": "hardhat run scripts/check-env.js --network mezoTestnet",
+    "//standalone": "These three need no Hardhat — plain ethers, so they start instantly and dodge the Hardhat 3.x / Node 20 trap entirely. They poll the chain instead of awaiting tx.wait(), which hangs on the Mezo testnet RPC.",
+    "permit2:grant": "node scripts/grant-permit2.js",
+    "agent:limits": "node scripts/set-limits.js",
+    "agent:retire": "node scripts/retire-agent.js",
+    "//resume": "Undo an EMERGENCY STOP: unpause the treasury on chain, then release float back to the agent. Order matters \u2014 fundAgent is whenNotPaused, so the unpause has to land first. REFUND_MUSD=5 or SKIP_FUND=1 to tune.",
+    "resume": "node scripts/resume.js"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-chai-matchers": "^2.1.2",
+    "@nomicfoundation/hardhat-ethers": "^3.1.3",
+    "chai": "^4.5.0",
+    "dotenv": "^18.0.8",
+    "ethers": "^6.17.0",
+    "hardhat": "^2.29.1"
+  },
+  "//pinning": "Hardhat is deliberately pinned to ^2 (latest is 3.x, which uses an incompatible ESM config format). chai is pinned to ^4 because chai 5+ is ESM-only and breaks CommonJS Hardhat 2 tests. Mezo docs specify solc 0.8.28 + evmVersion london — see hardhat.config.js."
+}

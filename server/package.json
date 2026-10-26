@@ -1,0 +1,39 @@
+{
+  "name": "agentfloat-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "AgentFloat policy gateway \u2014 enforces spending rules and signs x402 MUSD payments for the agent wallet",
+  "main": "agent-gateway.js",
+  "scripts": {
+    "start": "node agent-gateway.js",
+    "//dev": "Alias for `start`, so `npm run dev` works here too. `dev` is NOT a watch/reload script \u2014 the gateway is plain Node, there is nothing to recompile. Use the ROOT `npm run dev` to get gateway + dashboard together.",
+    "dev": "node agent-gateway.js",
+    "test:faucet": "node faucet-test.js",
+    "test:gateway": "node test-gateway.mjs",
+    "//test:deploy": "Boots the REAL gateway as a child process bound to 0.0.0.0 with an origin allowlist and an admin token, then makes actual HTTP requests to it: the CORS matrix (including the shared-apex hole a live curl found), the admin lock on /api/pause, the platform PORT/HOST handling, the x402 expose headers, and the loopback default staying frictionless. Needs server/.env; spends nothing and writes nothing on chain.",
+    "test:deploy": "node test-deploy.mjs",
+    "//test:relay": "LIVE end-to-end relay test: probe -> sign -> relayed fetch -> settlement verified against the MUSD Transfer logs -> refusals. Spends 0.001 MUSD from the agent wallet in server/.env and needs the gateway running. Not part of `npm test`.",
+    "test:relay": "node e2e-relay.mjs",
+    "//test:onboarding": "LIVE end-to-end onboarding: a brand-new wallet claims MUSD, is refused for want of a Permit2 approval, requests gas from the app, approves Permit2 itself, then pays a real seller. Spends one faucet claim (10 MUSD), one gas drip (0.00005 BTC) and one payment (0.001 MUSD); registers a throwaway agent. Needs the gateway running.",
+    "test:onboarding": "node e2e-onboarding.mjs",
+    "//test:autopay:live": "LIVE: drives the SHIPPED automation state machine (frontend/src/lib/autopay.js) against the real chain — a wallet lowers its own daily cap by signature, the panel predicts which run the cap refuses, and the gateway must refuse exactly that run and stop the loop. Spends 10 MUSD (faucet) + 0.00005 BTC (gas) + 0.005 MUSD (five purchases); registers a throwaway agent. Needs the gateway running.",
+    "test:autopay:live": "node e2e-autopay.mjs",
+    "//test:gateway": "Offline tests for the relay SSRF guard, the self-service budget ceiling and signature check, and the Telegram message renderer. No network, no chain, no bot token needed."
+  },
+  "dependencies": {
+    "@x402/core": "^2.28.0",
+    "@x402/evm": "^2.28.0",
+    "@x402/express": "^2.28.0",
+    "@x402/fetch": "^2.28.0",
+    "cors": "^2.8.5",
+    "dotenv": "^18.0.8",
+    "ethers": "^6.17.0",
+    "express": "^4.21.2",
+    "viem": "2.57.7"
+  },
+  "overrides": {
+    "@solana/kit": "6.9.0"
+  },
+  "//overrides": "@x402 packages pull a transitive Solana SDK whose 6.10.0 release references unpublished sub-packages, which breaks npm install even for EVM-only use. Pinning 6.9.0 is Mezo's documented workaround. See DEPLOYMENT-BRIEF.md \u00a76."
+}

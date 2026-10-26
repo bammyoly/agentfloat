@@ -1,0 +1,66 @@
+<!doctype html>
+<!--
+  THE INLINE STYLES ON <html> AND <body> ARE LOAD-BEARING. DO NOT MOVE THEM
+  INTO index.css.
+
+  A dark app has one failure mode that looks like a rendering bug and is not
+  one: for the first few frames the browser has parsed this document but has
+  NOT applied src/index.css (it is bundled JS/CSS, so it arrives after the
+  module graph resolves). In that window the canvas is the UA default — white.
+  The boot screen below paints its own dark rectangle, which is why the flash
+  showed up as a WHITE BORDER at the top, left and right of the spinner rather
+  than a white page: the rectangle was dark, the document behind it was not.
+
+  Presentation hints in start tags are applied while parsing, before any
+  stylesheet exists, so these three declarations make the very first frame
+  dark. `color-scheme: dark` is the other half — without it the UA renders
+  form controls, scrollbars and the canvas itself in light mode regardless of
+  what the background says.
+
+  index.css still owns the real design; this only guarantees frame one.
+-->
+<html lang="en" style="background-color:#080a10;color-scheme:dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#080a10" />
+    <meta name="description" content="AgentFloat — budget-controlled MUSD wallet for AI agents on Mezo. x402 payments with human-set spending limits." />
+    <title>AgentFloat — budget-controlled MUSD for AI agents</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23f7931a'/%3E%3Cpath d='M9 21.5 16 8l7 13.5H9z' fill='%230b0e14'/%3E%3C/svg%3E" />
+    <!--
+      Critical frame-one CSS. In the head, so it is applied before the first
+      paint, and inline because an external file would reintroduce exactly the
+      delay this exists to remove. It covers the two things a stylesheet that
+      has not arrived yet cannot: the document canvas and the UA's own margin.
+    -->
+    <style>
+      html { background-color: #080a10; }
+      body { margin: 0; background-color: #080a10; color: #e7ecf3; }
+      #root { min-height: 100%; }
+      @keyframes af-spin { to { transform: rotate(360deg); } }
+      @media (prefers-reduced-motion: reduce) { #root svg { animation: none !important; } }
+    </style>
+  </head>
+  <body style="background-color:#080a10;margin:0">
+    <!--
+      Boot screen for the moment before React mounts. React replaces the
+      contents of #root when it renders, so nothing has to remove this by hand.
+      Inline styles and an inline SVG only: no external resource may be assumed
+      here, and a flash of unstyled white is worse than a blank screen on a dark
+      app. The ring alone — no copy. Which chunk is slow is a guess, and the
+      pages that know what they are waiting for say so themselves.
+    -->
+    <div id="root">
+      <div style="min-height:100vh;min-height:100dvh;display:grid;place-items:center;background:#080a10;color:#e7ecf3;font-family:ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;padding:0 24px">
+        <div role="status" aria-live="polite" aria-label="Loading" style="display:flex;align-items:center">
+          <svg width="30" height="30" viewBox="0 0 24 24" fill="none" aria-hidden="true" style="animation:af-spin .9s linear infinite;color:#f7931a">
+            <circle cx="12" cy="12" r="9.5" stroke="currentColor" stroke-opacity="0.22" stroke-width="3"></circle>
+            <path d="M12 2.5a9.5 9.5 0 0 1 9.5 9.5" stroke="currentColor" stroke-width="3" stroke-linecap="round"></path>
+          </svg>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

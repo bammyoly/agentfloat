@@ -1,0 +1,17 @@
+{
+  "agents": [
+    {
+      "address": "0xF8F56f404DB1cDb9E03b66F37D916183f4f32686",
+      "label": "agent-main",
+      "perCallMax": "2000000000000000000",
+      "dailyCap": "20000000000000000000",
+      "registeredAt": "2026-10-21T10:59:00.724Z",
+      "chainId": 31611,
+      "recallAllowanceGranted": true,
+      "recallAllowance": "115792089237316195423570985008687907853269984665640564039457584007913129639935",
+      "permit2Address": "0x000000000022D473030F116dDEE9F6B43aC78BA3",
+      "permit2AllowanceGranted": true,
+      "permit2Allowance": "115792089237316195423570985008687907853269984665640564039457584007913129639935"
+    }
+  ]
+}

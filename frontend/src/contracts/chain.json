@@ -1,0 +1,39 @@
+{
+  "chainId": 31611,
+  "chainIdHex": "0x7b7b",
+  "name": "Mezo Testnet",
+  "caip2": "eip155:31611",
+  "rpcUrl": "https://rpc.test.mezo.org",
+  "explorerUrl": "https://explorer.test.mezo.org",
+  "nativeCurrency": {
+    "name": "BTC",
+    "symbol": "BTC",
+    "decimals": 18
+  },
+  "faucetUrl": "https://faucet.test.mezo.org",
+  "isTestnet": true,
+  "musd": {
+    "address": "0x118917a40FAF1CD7a13dB0Ef56C86De7973Ac503",
+    "name": "Mezo USD",
+    "symbol": "MUSD",
+    "decimals": 18,
+    "isMock": false
+  },
+  "x402": {
+    "facilitatorUrl": "https://facilitator.vativ.io",
+    "settlementProxy": "0x402085c248EeA27D92E8b30b2C58ed07f9E20001",
+    "scheme": "exact",
+    "eip712Domain": {
+      "name": "Mezo USD",
+      "version": "1"
+    },
+    "gasSponsoring": "eip2612GasSponsoring"
+  },
+  "savingsVault": {
+    "address": null,
+    "receiptSymbol": "sMUSD",
+    "available": false,
+    "isErc4626": false,
+    "note": "Not deployed on Mezo testnet. The sMUSD savings vault is mainnet-only."
+  }
+}
