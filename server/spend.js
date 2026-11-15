@@ -1,4 +1,5 @@
 // ---------------------------------------------------------------------------
+// server/spend.js
 // spend — how much an agent has ACTUALLY spent today.
 //
 // WHY THIS MODULE EXISTS

@@ -1,50 +1,32 @@
-// ---------------------------------------------------------------------------
-// Shared session logic for non-Privy wallets (Reown AppKit and bare injected).
-//
-// THE SHAPE IS THE CONTRACT
-//   Everything downstream — navbar, pages, the x402 payer — reads
-//   SessionContext and never asks which provider produced it. PrivyLayer
-//   publishes that shape; so does InertSessionProvider; so must these bridges.
-//   Adding a wallet provider to AgentFloat is therefore *only* writing one of
-//   these bridges; nothing else in the app changes.
-//
-// WHY A PRIVY-SHAPED WALLET SHIM
-//   `lib/x402-browser.js` builds its viem payer from `wallet.address` and
-//   `await wallet.getEthereumProvider()`. Those two members are all it touches,
-//   so an injected wallet wearing that shape routes permit2 signing through
-//   MetaMask (or any EIP-1193 wallet) with no change to the payer at all.
-//
-// THE NETWORK REQUIREMENT
-//   AgentFloat only exists on Mezo testnet. A connected wallet on Ethereum
-//   mainnet is useless here, so on connect — and on demand via the navbar badge
-//   — we call ensureChain(): switch if the chain is known, add it (EIP-3085)
-//   and switch if it is not. A rejection is the user's answer and is surfaced,
-//   never retried silently.
-// ---------------------------------------------------------------------------
-
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BrowserProvider } from "ethers";
 
 import { MEZO_TESTNET_ID, describeChainError, ensureChain, parseChainId, sameChainId } from "./evm-network.js";
 import { TREASURY_ADDRESS, IS_DEPLOYED } from "../contracts/index.js";
+import { authenticateAgent, logoutAgent } from "./agent-auth.js";
+import { setSessionToken, clearSessionToken } from "./session-token.js";
 
-/**
- * Minimal stand-in for a Privy wallet object.
- * @param getEip1193 returns the live EIP-1193 provider; a function because the
- *   underlying provider object is replaced when the wallet switches accounts.
- */
+/* ── fetch with hard timeout ── */
+function fetchWithTimeout(url, options = {}, timeoutMs = 12000) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`Request timed out after ${timeoutMs}ms`)),
+      timeoutMs
+    );
+    fetch(url, options)
+      .then((res) => { clearTimeout(timer); resolve(res); })
+      .catch((err) => { clearTimeout(timer); reject(err); });
+  });
+}
+
 export function makeWalletShim(address, getEip1193, kind) {
   return {
     address,
-    // Deliberately NOT "privy": canSignX402() accepts a small allowlist of EOA
-    // kinds, and keeping the kind honest means the ledger and the UI can say
-    // where a signature came from.
     walletClientType: kind,
     getEthereumProvider: async () => getEip1193(),
   };
 }
 
-/** The underlying EIP-1193 object behind an ethers BrowserProvider. */
 export function rawEip1193(ethersProvider) {
   if (ethersProvider && typeof ethersProvider.provider?.request === "function") return ethersProvider.provider;
   if (ethersProvider && typeof ethersProvider.request === "function") return ethersProvider;
@@ -52,39 +34,29 @@ export function rawEip1193(ethersProvider) {
   return null;
 }
 
-/** Wrap a raw EIP-1193 provider as an ethers BrowserProvider, tolerantly. */
 export function toBrowserProvider(raw) {
   if (!raw) return null;
   if (raw instanceof BrowserProvider) return raw;
-  try {
-    // "any" disables ethers' own chain-change guard: we manage chain changes
-    // ourselves and want events, not thrown errors, when the wallet moves.
-    return new BrowserProvider(raw, "any");
-  } catch {
-    return null;
-  }
+  try { return new BrowserProvider(raw, "any"); } catch { return null; }
 }
 
-/**
- * Build the SessionContext value for a connected external wallet.
- *
- * @param kind        "injected" | "reown"
- * @param address     connected account, or null
- * @param raw         live EIP-1193 provider, or null
- * @param openConnect opens the provider's connect UI
- * @param disconnect  provider logout
- */
 export function useWalletSession({ kind, address, raw, openConnect, disconnect }) {
   const [authenticating, setAuthenticating] = useState(false);
+  const [agentAuthenticating, setAgentAuthenticating] = useState(false);
   const [authError, setAuthError] = useState(null);
   const [chainId, setChainId] = useState(null);
-  // Tri-state: null = nothing connected yet, so there is no chain to be wrong
-  // about. The navbar only offers a switch button on a measured `false`.
   const [chainOk, setChainOk] = useState(null);
   const [networkBusy, setNetworkBusy] = useState(false);
   const [operatorSigner, setOperatorSigner] = useState(null);
 
-  // --- network: switch / add on connect and whenever the wallet moves -------
+  // Agent wallet state (server-side)
+  const [agentAddress, setAgentAddress] = useState(null);
+  const agentAuthRef = useRef(false);
+  const loginSuccessRef = useRef(false);   // ← belt-and-suspenders: prevents loop after success
+  const [forceSignedOut, setForceSignedOut] = useState(false);
+  const loginAbortRef = useRef(null);
+
+  // --- network ---------------------------------------------------------------
   const fixNetwork = useCallback(async () => {
     if (!raw) return { wasOnChain: false, switched: false, added: false };
     setNetworkBusy(true);
@@ -107,9 +79,6 @@ export function useWalletSession({ kind, address, raw, openConnect, disconnect }
     }
   }, [raw]);
 
-  // Read the chain on connect; adopt it if already correct, otherwise ask the
-  // wallet to move. Done in an effect (not inside login) so a wallet that was
-  // already connected on a previous visit gets fixed on page load too.
   useEffect(() => {
     if (!raw || !address) { setChainId(null); setChainOk(null); return; }
     let cancelled = false;
@@ -121,16 +90,12 @@ export function useWalletSession({ kind, address, raw, openConnect, disconnect }
         if (sameChainId(current, MEZO_TESTNET_ID)) { setChainOk(true); return; }
         await fixNetwork();
       } catch {
-        // Could not read the chain at all. Unknown, not wrong: claiming "wrong
-        // network" here would offer a switch button for a wallet that may be
-        // perfectly fine, and the switch itself would fail the same way.
         if (!cancelled) setChainOk(null);
       }
     })();
     return () => { cancelled = true; };
   }, [raw, address, fixNetwork]);
 
-  // Follow the wallet if the user changes network or account by hand.
   useEffect(() => {
     if (!raw?.on) return;
     const onChain = (value) => {
@@ -141,8 +106,129 @@ export function useWalletSession({ kind, address, raw, openConnect, disconnect }
     return () => { raw.removeListener?.("chainChanged", onChain); };
   }, [raw]);
 
-  // --- operator detection: identical rule to the Privy path -----------------
-  // The treasury owner is whoever the contract says it is. Never a toggle.
+  // --- agent wallet auth (server-side) ---------------------------------------
+  useEffect(() => {
+    if (!address || forceSignedOut || agentAddress || loginSuccessRef.current) return;
+
+    // cancel any previous in-flight login
+    if (loginAbortRef.current) loginAbortRef.current.abort();
+    const controller = new AbortController();
+    loginAbortRef.current = controller;
+
+    const MAX_RETRIES = 5;
+    const BASE_DELAY_MS = 2000;
+
+    (async () => {
+      for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+        if (controller.signal.aborted || loginSuccessRef.current) return;
+
+        try {
+          setAuthenticating(true);
+          setAuthError(
+            attempt > 1
+              ? { code: "agent_login", hint: `Retrying agent login… (${attempt}/${MAX_RETRIES})`, at: Date.now() }
+              : null
+          );
+
+          /* ① challenge */
+          const chalRes = await fetchWithTimeout(
+            `/api/session/challenge?address=${encodeURIComponent(address)}`,
+            { signal: controller.signal },
+            10000
+          );
+          if (!chalRes.ok) throw new Error(`Challenge ${chalRes.status}`);
+          const chal = await chalRes.json();
+          if (typeof chal.message !== "string" || !chal.message || !chal.nonce) {
+            throw new Error(`Bad challenge response: ${JSON.stringify(chal)}`);
+          }
+          if (controller.signal.aborted) return;
+
+          /* ② sign the message text */
+          const signature = await raw.request({
+            method: "personal_sign",
+            params: [chal.message, address],
+          });
+          if (controller.signal.aborted) return;
+
+          /* ③ login */
+          const loginRes = await fetchWithTimeout(
+            "/api/session/login",
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                address,
+                signature,
+                message: chal.message,
+                nonce: chal.nonce,
+              }),
+              signal: controller.signal,
+            },
+            15000
+          );
+
+          if (!loginRes.ok) {
+            const body = await loginRes.json().catch(() => ({}));
+            throw new Error(body.error || `Login ${loginRes.status}`);
+          }
+          const data = await loginRes.json();
+          if (controller.signal.aborted) return;
+
+          /* ✅ success — mark BEFORE any state updates so the ref guard
+               catches re-entrant effect runs immediately */
+          loginSuccessRef.current = true;
+          agentAuthRef.current = true;
+
+          setSessionToken(data.sessionToken);          // ← FIXED: was storeSessionToken
+          setAgentAddress(data.agentAddress);
+          setAuthenticating(false);
+          setAuthError(null);
+          return;
+
+        } catch (err) {
+          if (controller.signal.aborted || loginSuccessRef.current) return;
+          console.warn(
+            `Agent login attempt ${attempt}/${MAX_RETRIES} failed:`,
+            err.message
+          );
+
+          if (attempt >= MAX_RETRIES) {
+            setAuthenticating(false);
+            setAuthError({
+              code: "agent_login_failed",
+              hint: `Could not load agent wallet after ${MAX_RETRIES} attempts. Refresh to retry.`,
+              at: Date.now(),
+            });
+            return;
+          }
+
+          const delay = Math.min(
+            BASE_DELAY_MS * Math.pow(2, attempt - 1),
+            16000
+          );
+          setAuthError({
+            code: "agent_login",
+            hint: `Agent login failed — retrying in ${delay / 1000}s… (${attempt}/${MAX_RETRIES})`,
+            at: Date.now(),
+          });
+
+          // interruptible sleep
+          await new Promise((resolve) => {
+            const t = setTimeout(resolve, delay);
+            controller.signal.addEventListener("abort", () => {
+              clearTimeout(t);
+              resolve();
+            });
+          });
+        }
+      }
+    })();
+
+    return () => controller.abort();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [address, forceSignedOut]);
+
+  // --- operator detection ----------------------------------------------------
   useEffect(() => {
     let cancelled = false;
     async function resolve() {
@@ -172,6 +258,7 @@ export function useWalletSession({ kind, address, raw, openConnect, disconnect }
   }, [raw, address]);
 
   const login = useCallback(async () => {
+    setForceSignedOut(false);
     setAuthError(null);
     setAuthenticating(true);
     try {
@@ -190,30 +277,45 @@ export function useWalletSession({ kind, address, raw, openConnect, disconnect }
     }
   }, [openConnect]);
 
-  const wallet = useMemo(
+  const logout = useCallback(async () => {
+    setForceSignedOut(true);
+    setOperatorSigner(null);
+    setAgentAddress(null);
+    setAuthError(null);
+    agentAuthRef.current = false;
+    loginSuccessRef.current = false;       // ← reset so next login can run
+    clearSessionToken();
+
+    try { await logoutAgent(); } catch { /* server may be unreachable */ }
+  }, []);
+
+  // The primary wallet shim
+  const primaryWallet = useMemo(
     () => (address ? makeWalletShim(address, () => raw, kind) : null),
     [address, raw, kind]
+  );
+
+  // The agent wallet shim
+  const agentWallet = useMemo(
+    () => (agentAddress ? { address: agentAddress, walletClientType: "server-agent" } : null),
+    [agentAddress]
   );
 
   const value = useMemo(() => ({
     configured: true,
     ready: true,
-    authenticating,
-    user: address ? { id: `eip155:${address}`, connectedWallet: true } : null,
-    // The connected wallet IS the agent wallet on this path: it is an EOA the
-    // user already controls, the faucet funds it, and it signs permit2 itself.
-    agentWallet: wallet,
-    agentAddress: address || null,
-    // Strict on this path, unlike the Privy one: an injected wallet really can
-    // be pointed at mainnet, and a permit2 signature meant for Mezo would be
-    // presented to a wallet the user believes is elsewhere. Unknown (null) is
-    // treated as not-yet-signable and resolves on the first chain read.
-    canSignX402: Boolean(wallet) && chainOk === true,
+    authenticating: authenticating || agentAuthenticating,
+    user: (address && !forceSignedOut) ? { id: `eip155:${address}`, connectedWallet: true } : null,
+    primaryAddress: address || null,
+    primaryWallet,
+    agentWallet,
+    agentAddress: agentAddress || null,
+    canSignX402: Boolean(agentAddress) && chainOk === true,
     isOperator: Boolean(operatorSigner),
     operatorSigner,
-    externalWallets: wallet ? [wallet] : [],
+    externalWallets: primaryWallet ? [primaryWallet] : [],
     login,
-    logout: async () => { setOperatorSigner(null); await disconnect?.(); },
+    logout,
     signMessage,
     getAccessToken: async () => null,
     authError,
@@ -223,7 +325,9 @@ export function useWalletSession({ kind, address, raw, openConnect, disconnect }
     networkBusy,
     fixNetwork,
     providerKind: kind,
-  }), [authenticating, address, wallet, chainOk, chainId, networkBusy, operatorSigner, login, disconnect, signMessage, authError, fixNetwork, kind]);
+  }), [authenticating, agentAuthenticating, address, agentAddress, primaryWallet, agentWallet,
+       chainOk, chainId, networkBusy, operatorSigner, login, logout, signMessage, authError, fixNetwork, kind, forceSignedOut]);
 
   return value;
 }
+

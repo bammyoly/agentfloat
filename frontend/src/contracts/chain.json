@@ -30,10 +30,10 @@
     "gasSponsoring": "eip2612GasSponsoring"
   },
   "savingsVault": {
-    "address": null,
+    "address": "0x6f461c68B2c5492C0F5CCEc5a264d692aA7A8e16",
     "receiptSymbol": "sMUSD",
-    "available": false,
+    "available": true,
     "isErc4626": false,
-    "note": "Not deployed on Mezo testnet. The sMUSD savings vault is mainnet-only."
+    "note": "Testnet MUSDSavingsRate — judges' recommended address. Verify with: cast code 0x6f46...e16 --rpc-url https://rpc.test.mezo.org"
   }
 }

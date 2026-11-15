@@ -1,55 +1,16 @@
-// ---------------------------------------------------------------------------
-// Dashboard — YOUR agent first, shared protocol state last.
-//
-// LAYOUT IS A PRODUCT DECISION, NOT COSMETICS.
-//   The earlier version opened with the treasury and the gateway's demo agent,
-//   which read to a brand-new user as "I already have a balance I did not put
-//   there". They do not: the treasury is shared protocol state and the demo
-//   agent belongs to the operator's gateway. So the page opens with the three
-//   things that are actually the visitor's — their wallet, their activity, and
-//   the next step — and everything shared sits below a labelled divider.
-//
-//   The signed-in user's wallet is still read straight from the treasury
-//   contract, not from the gateway: agentStatus() reverts for an unregistered
-//   address, and that revert is the signal that points them at the faucet
-//   instead of an error to surface.
-//
-// ANALYTICS, AND WHERE THE NUMBERS COME FROM
-//   The activity panels are drawn from the treasury's own receipts via
-//   /api/chain-records — payments and denials the contract stored — never from a
-//   counter the frontend keeps. Two consequences worth stating on the page:
-//     • the figures survive a reload, a different device and a gateway restart,
-//       because they are on chain;
-//     • they are a WINDOW (the last `recordWindow` records), so the panel says
-//       how many it read rather than implying it has all of history.
-//   The same <ActivityPanel /> renders both scopes with different inputs, so
-//   "your activity" and "protocol activity" cannot drift apart in colour, empty
-//   state or arithmetic.
-//
-// EVERY STATE IS EXPLICIT.
-//   provisioning → hero skeleton, no numbers at all
-//   reading      → skeleton bars, never a zero that could be read as a balance
-//   unfunded     → a real 0.0000 plus the one action that changes it
-//   funded       → the caps grid and a live meter
-//   A dashboard that shows 0.0000 while it is still loading teaches the user
-//   that their money vanished; that is why the loading branch has no number.
-// ---------------------------------------------------------------------------
-
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import {
-  Activity, Bell, Check, CircleAlert, CircleCheck, Clock, Coins, Gauge, KeyRound,
-  Landmark, LayoutDashboard, Lock, PlugZap, ReceiptText, ShieldCheck,
-  TrendingUp, Wallet, Zap,
+  Activity, Bell, Check, CircleAlert, CircleCheck, Clock, Coins, Gauge,
+  KeyRound, Landmark, LayoutDashboard, Lock, PlugZap, ReceiptText,
+  ShieldCheck, TrendingUp, Wallet, Zap, ArrowUpRight,
 } from "lucide-react";
 import { useAppData } from "../lib/app-data.jsx";
 import { telegramStatus } from "../lib/gateway.js";
 import { useSession } from "../lib/session.jsx";
-// Shared with Spend, Operate and Faucet: one read of agentStatus(), one copy of
-// the revert-means-unregistered handling.
 import { useAgentStatus } from "../lib/agent-status.jsx";
 import { readAllowance } from "../lib/permit2.js";
-import ApprovalModal from "../components/ApprovalModal.jsx";
+import { approveAgentPermit2 } from "../lib/agent-permit2.js";
 import ActivityPanel from "../components/Analytics.jsx";
 import {
   AddressLink, Badge, Button, Card, Dot, Grid, Icon, Meter, MoreLink, Note,
@@ -62,25 +23,39 @@ import { CHAIN, SAVINGS_VAULT, explorerToken, MUSD_ADDRESS } from "../contracts/
 export default function Dashboard() {
   const { health, loading, deployed, chainRecords, recordWindow } = useAppData();
   const session = useSession();
-
-  // BEFORE the !deployed return, not after it. A hook below an early return
-  // changes the hook count between renders the moment `deployed` flips — React
-  // then throws "Rendered more hooks than during the previous render" and takes
-  // the whole page down, which is what an artifact file appearing late does.
   const agentStatus = useAgentStatus(session.agentAddress);
 
-  // The MUSD → Permit2 allowance. Read here, above the !deployed return, for the
-  // same reason as agentStatus: a hook below an early return changes the hook count
-  // between renders and takes the page down.
   const [allowance, setAllowance] = useState(null);
-  const [approvalOpen, setApprovalOpen] = useState(false);
+  const [approving, setApproving] = useState(false);
+  const [approveError, setApproveError] = useState("");
+
   const refreshAllowance = useCallback(async () => {
     if (!session.agentAddress) { setAllowance(null); return; }
-    setAllowance(await readAllowance(session.agentAddress));
+    try {
+      setAllowance(await readAllowance(session.agentAddress));
+    } catch {
+      setAllowance(0n);
+    }
   }, [session.agentAddress]);
+
   useEffect(() => { refreshAllowance(); }, [refreshAllowance]);
 
-  // --- the receipts this page charts ---------------------------------------
+  const approved = Boolean(allowance && allowance > 0n);
+
+  async function onEnablePayments() {
+    setApproveError("");
+    setApproving(true);
+    try {
+      // Server signs + sends MUSD.approve(Permit2) from the AGENT key
+      await approveAgentPermit2();
+      await refreshAllowance();
+    } catch (e) {
+      setApproveError(e.message || "Approval failed");
+    } finally {
+      setApproving(false);
+    }
+  }
+
   const payments = chainRecords?.payments || [];
   const denials = chainRecords?.denials || [];
   const mine = useMemo(
@@ -90,8 +65,6 @@ export default function Dashboard() {
     }),
     [payments, denials, session.agentAddress]
   );
-  // Honest window labelling: if fewer records came back than we asked for, the
-  // panel says how many it has rather than claiming the full window.
   const windowNote = (count) =>
     count >= recordWindow
       ? `last ${recordWindow} on-chain records`
@@ -100,8 +73,7 @@ export default function Dashboard() {
   if (!deployed) {
     return (
       <Note tone="warn" icon={Lock} title="No deployment found">
-        Run <span className="code">npm run deploy</span> from the repo root, which writes the
-        artifacts the frontend reads. Until then there is no treasury to show you a balance from.
+        Run <span className="code">npm run deploy</span> from the repo root.
       </Note>
     );
   }
@@ -112,12 +84,17 @@ export default function Dashboard() {
         icon={LayoutDashboard}
         eyebrow="your agent"
         title="Dashboard"
-        sub="Your wallet, your budget, your payments. Everything shared — the treasury and the operator's demo agent — is separated below a divider that says so."
+        sub="Borrow MUSD on Earn, fund your agent, enable Permit2, then spend via x402 — all self-funded."
         aside={
           <>
             {session.agentAddress && (
-              <Badge tone="btc" icon={Wallet} title="The wallet Privy created for this login">
+              <Badge tone="btc" icon={Wallet} title="Server-side agent EOA">
                 <AddressLink address={session.agentAddress} chars={4} explore={false} />
+              </Badge>
+            )}
+            {session.primaryAddress && (
+              <Badge tone="neutral" icon={KeyRound} title="Connected wallet">
+                <AddressLink address={session.primaryAddress} chars={4} explore={false} />
               </Badge>
             )}
             <Badge tone={health && !health.unreachable ? "ok" : "bad"} icon={Activity}>
@@ -128,54 +105,49 @@ export default function Dashboard() {
         }
       />
 
-      {/* --- yours: the wallet, then what to do next ------------------------ */}
+      {approveError && (
+        <Note tone="bad" icon={CircleAlert} title="Permit2 approval failed">
+          {approveError}
+        </Note>
+      )}
+
       <div className="grid items-start gap-6 lg:grid-cols-3">
         <div className="lg:col-span-2">
           <YourAgent
             session={session}
             agentStatus={agentStatus}
             allowance={allowance}
-            approved={Boolean(allowance && allowance > 0n)}
-            onEnable={() => setApprovalOpen(true)}
+            approved={approved}
+            approving={approving}
+            onEnable={onEnablePayments}
           />
         </div>
         <div className="lg:col-span-1">
           <NextSteps
             session={session}
             agentStatus={agentStatus}
-            approved={Boolean(allowance && allowance > 0n)}
-            onEnable={() => setApprovalOpen(true)}
+            approved={approved}
+            approving={approving}
+            onEnable={onEnablePayments}
           />
         </div>
       </div>
 
-      {/* --- yours: what this wallet has actually done, from the chain ------ */}
       <ActivityPanel
         scope="you"
         icon={Wallet}
         tone="btc"
         title="Your activity"
-        sub="Every payment and refusal this wallet has on the treasury — read from the chain, not from a counter in this browser."
+        sub="Payments and refusals for this agent — read from the treasury, not a browser counter."
         payments={mine.payments}
         denials={mine.denials}
         windowNote={windowNote(mine.payments.length + mine.denials.length)}
-        emptyTo="/spend"
-        emptyCta="Make your first payment"
+        emptyTo="/earn"
+        emptyCta="Fund via Earn"
       />
 
       <AlertsTeaser address={session.agentAddress} registered={agentStatus.registered} />
 
-      <ApprovalModal
-        open={approvalOpen}
-        onClose={() => setApprovalOpen(false)}
-        wallet={session.agentWallet}
-        address={session.agentAddress}
-        signMessage={session.signMessage}
-        amountWei={null}
-        onApproved={() => refreshAllowance()}
-      />
-
-      {/* Divider that says in words where "yours" stops and "shared" starts. */}
       <SectionDivider>Shared Protocol Infrastructure</SectionDivider>
 
       <ProtocolSection
@@ -190,41 +162,32 @@ export default function Dashboard() {
 }
 
 // ---------------------------------------------------------------------------
-// Your agent — hero wallet
+// Your agent
 // ---------------------------------------------------------------------------
 
-function YourAgent({ session, agentStatus, allowance, approved = false, onEnable = null }) {
-  // Sign-in is gated by RequireSession, but the provider can still be off
-  // entirely (no VITE_PRIVY_APP_ID), in which case there is no wallet to show.
+function YourAgent({ session, agentStatus, allowance, approved, approving, onEnable }) {
   if (!session.configured) {
     return (
       <Card icon={Wallet} title="Your agent" aside={<Badge tone="neutral" icon={Lock}>sign-in disabled</Badge>}>
         <Note icon={KeyRound}>
-          Configure <span className="code">VITE_PRIVY_APP_ID</span> to give every visitor their own agent wallet behind a
-          Google or email login.
+          Configure <span className="code">VITE_REOWN_PROJECT_ID</span> to connect a wallet.
         </Note>
       </Card>
     );
   }
 
-  // Privy creates the embedded wallet asynchronously after login. Google takes
-  // visibly longer than email because of the OAuth round-trip before
-  // provisioning starts; saying so turns a scary blank into a wait.
   if (!session.agentAddress) {
     return (
       <Card
         icon={Wallet}
-        title="Provisioning wallet"
+        title="Creating agent wallet"
         aside={<Badge tone="warn"><Dot tone="warn" pulse /> processing</Badge>}
       >
         <p className="text-[14.5px] leading-relaxed text-muted">
-          Privy is generating your embedded wallet now, inside its TEE — the key never reaches this browser or our
-          gateway. Google sign-in usually takes a little longer than email because of the OAuth round-trip, and creation
-          runs once per identity: the same login gets the same address and the same balance on every later visit.
+          AgentFloat is generating a server-side EOA tied to your connected wallet.
+          The key is encrypted in MongoDB and never touches this browser — required
+          because x402 on Mezo settles with Permit2 (EIP-712), which only an EOA can sign.
         </p>
-
-        {/* Skeleton of the hero that is about to appear, so the shape of the
-            page does not jump when the wallet lands. */}
         <div className="mt-6 animate-pulse rounded-xl border border-line-soft bg-ink-dim p-4">
           <div className="mb-4 h-11 w-52 rounded-lg bg-line-soft" />
           <div className="flex gap-4">
@@ -233,18 +196,12 @@ function YourAgent({ session, agentStatus, allowance, approved = false, onEnable
             <div className="h-20 w-full rounded-lg bg-line-soft" />
           </div>
         </div>
-
-        <Note className="mt-4" icon={Clock}>
-          Nothing to click — this page re-reads your session on its own. If it is still provisioning after a minute or
-          two, sign out and back in; Privy reattaches the wallet it started rather than making a second one.
-        </Note>
       </Card>
     );
   }
 
   const s = agentStatus.status;
-  const isUnregistered = agentStatus.registered === false;
-  const isLoading = agentStatus.loading || (!s && !isUnregistered);
+  const isLoading = agentStatus.loading;
 
   return (
     <Card
@@ -252,150 +209,115 @@ function YourAgent({ session, agentStatus, allowance, approved = false, onEnable
       icon={Wallet}
       tone="btc"
       title={
-        // A <span>, not a <div>: Card renders `title` inside an <h2>, and a div
-        // in a heading is invalid flow content even though browsers allow it.
         <span className="flex flex-wrap items-center gap-2.5">
           Your Agent Wallet
-          <Badge
-            tone="info"
-            icon={KeyRound}
-            title="x402 authorization is an EIP-712 permit2 signature, which a contract wallet cannot produce"
-          >
-            embedded EOA
+          <Badge tone="info" icon={KeyRound} title="Server-side EOA — signs x402 Permit2">
+            server EOA
           </Badge>
           {allowance !== null && (
             approved
-              ? <Badge tone="ok" icon={ShieldCheck} title="This wallet has approved Permit2, so x402 can settle">payments enabled</Badge>
-              : <Badge tone="warn" icon={Lock} title="Without one approval from this wallet every payment is refused">approval needed</Badge>
+              ? <Badge tone="ok" icon={ShieldCheck}>payments enabled</Badge>
+              : <Badge tone="warn" icon={Lock}>approval needed</Badge>
           )}
         </span>
       }
       aside={
-        isUnregistered ? (
-          <Badge tone="warn" icon={Coins}>wallet created · unfunded</Badge>
-        ) : isLoading ? (
+        isLoading ? (
           <Badge tone="warn"><Dot tone="warn" pulse /> reading chain</Badge>
         ) : (
-          <Badge tone="ok" icon={Landmark}><Dot tone="ok" /> live on-chain</Badge>
+          <Badge tone="ok" icon={Landmark}><Dot tone="ok" /> live</Badge>
         )
       }
     >
-      {/* --- hero: the float, the address, and the two primary operations --- */}
       <div className="mt-1 flex flex-col justify-between gap-6 border-b border-line-soft pb-6 md:flex-row md:items-end">
         <div className="min-w-0">
           <div className="stat-label">spendable float</div>
-
-          {isUnregistered ? (
-            // A genuine zero: an unregistered wallet cannot hold float, because
-            // the faucet registers and funds in the same transaction.
-            <div className="mt-1 text-[36px] leading-none font-light text-dim">
-              0.0000 <span className="text-[20px]">MUSD</span>
-            </div>
-          ) : isLoading ? (
-            // No number while the chain read is in flight. A pulsing 0.0000 is
-            // indistinguishable from "your balance is gone".
+          {isLoading ? (
             <div className="mt-2 h-11 w-56 animate-pulse rounded-lg bg-line-soft" />
           ) : (
             <div className="tnum mt-1 text-[40px] leading-none font-light tracking-tight text-text">
-              {fmtMusd(s?.walletBalance, 4)} <span className="text-[20px] font-medium text-muted">MUSD</span>
+              {fmtMusd(s?.walletBalance ?? 0n, 4)}{" "}
+              <span className="text-[20px] font-medium text-muted">MUSD</span>
             </div>
           )}
-
-          <div className="mt-4 inline-flex items-center gap-2 rounded-lg border border-line-soft bg-ink-dim px-3 py-1.5">
-            <Icon as={Wallet} size={13} className="text-dim" />
-            <AddressLink address={session.agentAddress} chars={8} size={13} />
+          <div className="mt-4 flex flex-wrap gap-2">
+            <div className="inline-flex items-center gap-2 rounded-lg border border-line-soft bg-ink-dim px-3 py-1.5">
+              <Icon as={Wallet} size={13} className="text-dim" />
+              <AddressLink address={session.agentAddress} chars={8} size={13} />
+            </div>
+            {session.primaryAddress && (
+              <div className="inline-flex items-center gap-2 rounded-lg border border-line-soft bg-ink-dim px-3 py-1.5 text-[12px] text-dim">
+                owner <AddressLink address={session.primaryAddress} chars={4} size={12} />
+              </div>
+            )}
           </div>
         </div>
 
-        {/* Operations live beside the wallet they operate on. */}
         <div className="flex w-full flex-col gap-2.5 sm:flex-row md:w-auto">
-          <Link to="/faucet" className="w-full sm:w-auto">
+          <Link to="/earn" className="w-full sm:w-auto">
             <Button variant="primary" size="lg" icon={Coins} className="w-full">
-              {isUnregistered ? "Claim 10 MUSD" : "Top up faucet"}
+              Earn · Borrow MUSD
             </Button>
           </Link>
           <Link to="/spend" className="w-full sm:w-auto">
-            <Button
-              size="lg"
-              icon={PlugZap}
-              className="w-full"
-              disabled={isUnregistered}
-              title={isUnregistered ? "Claim from the faucet first — spending needs a registered wallet" : "Pay for an HTTP resource with x402"}
-            >
+            <Button size="lg" icon={PlugZap} className="w-full" disabled={!approved}
+              title={!approved ? "Enable payments first" : "Pay with x402"}>
               Pay an API
             </Button>
           </Link>
-          {!approved && onEnable && !isUnregistered && (
-            <Button size="lg" variant="ghost" className="w-full border border-warn/40 text-warn hover:bg-warn/10 sm:w-auto"
-                    icon={ShieldCheck} onClick={onEnable}
-                    title="One approval from your wallet lets Permit2 settle x402 payments">
-              Enable payments
+          {!approved && (
+            <Button
+              size="lg"
+              variant="ghost"
+              className="w-full border border-warn/40 text-warn hover:bg-warn/10 sm:w-auto"
+              icon={ShieldCheck}
+              onClick={onEnable}
+              busy={approving}
+              disabled={approving}
+              title="Server-side MUSD.approve(Permit2) from your agent EOA"
+            >
+              {approving ? "Approving…" : "Enable payments"}
             </Button>
           )}
         </div>
       </div>
 
-      {/* --- the on-chain policy that bounds this wallet -------------------- */}
-      {isUnregistered ? (
-        <div className="mt-6">
-          <Note tone="warn" icon={Coins} title="This wallet exists but holds no MUSD">
-            It is not registered in the treasury yet either. The faucet fixes both in one step: it registers the wallet
-            with on-chain caps and airdrops 10 MUSD.
-          </Note>
+      {/* caps */}
+      <div className="mt-6 rounded-xl border border-line-soft bg-ink-dim/50 p-5">
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+          <span className="flex items-center gap-2 text-[12.5px] font-semibold tracking-[0.06em] text-dim uppercase">
+            <Icon as={Gauge} size={14} />
+            budgets &amp; caps
+          </span>
+          <MoreLink to="/operate">Manage</MoreLink>
         </div>
-      ) : isLoading ? (
-        <div className="mt-6 animate-pulse rounded-xl border border-line-soft bg-ink-dim/60 p-5">
-          <div className="mb-3 h-3 w-40 rounded bg-line-soft" />
-          <div className="flex gap-4">
+        {isLoading ? (
+          <div className="flex gap-4 animate-pulse">
             <div className="h-16 w-full rounded-lg bg-line-soft" />
             <div className="h-16 w-full rounded-lg bg-line-soft" />
             <div className="h-16 w-full rounded-lg bg-line-soft" />
           </div>
-        </div>
-      ) : (
-        <div className="mt-6 rounded-xl border border-line-soft bg-ink-dim/50 p-5">
-          <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
-            <span className="flex items-center gap-2 text-[12.5px] font-semibold tracking-[0.06em] text-dim uppercase">
-              <Icon as={Gauge} size={14} />
-              on-chain caps
-            </span>
-            <MoreLink to="/operate">Change your budget</MoreLink>
-          </div>
+        ) : (
           <Grid cols={3} className="gap-6">
-            <Stat icon={Clock} label="Funding left today" value={fmtMusd(s?.remainingToday, 2)} unit="MUSD"
-                  hint="float the treasury may still release today — not a spend budget" />
-            <Stat icon={Gauge} label="Daily cap" value={fmtMusd(s?.dailyCap, 2)} unit="MUSD" hint="resets 00:00 UTC" />
-            <Stat icon={ShieldCheck} label="Per-call max" value={fmtMusd(s?.perCallMax, 2)} unit="MUSD" hint="single payment limit" />
+            <Stat icon={Coins} label="Agent float" value={fmtMusd(s?.walletBalance ?? 0n, 2)} unit="MUSD"
+                  hint="MUSD held by the agent EOA" />
+            <Stat icon={Gauge} label="Daily spend cap" value={fmtMusd(s?.dailyCap ?? 0n, 2)} unit="MUSD"
+                  hint="MongoDB + on-chain ceiling" />
+            <Stat icon={ShieldCheck} label="Per-call max" value={fmtMusd(s?.perCallMax ?? 0n, 2)} unit="MUSD"
+                  hint="single payment limit" />
           </Grid>
-
-          {/* NO METER HERE, deliberately. How much of today's cap has been
-              SPENT is knowable only by summing the treasury's receipts, which the
-              Spend page does against a live quote. Drawing a meter on the
-              contract's funding counter instead is the exact confusion that
-              produced the "daily cap that never capped anything" bug, so this row
-              says where the real figure lives. */}
-          <div className="mt-5 border-t border-line-soft pt-4">
-            <p className="text-[13.5px] leading-relaxed text-dim">
-              Today's <b className="text-muted">spending</b> against that cap is summed from the treasury's receipts on
-              the <Link to="/spend" className="text-info hover:underline">Spend</Link> page, where a live quote makes it
-              exact. The figure above is the contract's <b className="text-muted">funding</b> headroom — a different
-              budget with a similar name, and not a spend meter.
-            </p>
-          </div>
+        )}
+        <div className="mt-5 border-t border-line-soft pt-4">
+          <p className="text-[13.5px] leading-relaxed text-dim">
+            Float comes from <Link to="/earn" className="text-info hover:underline">Earn</Link> (deposit BTC → borrow MUSD → fund agent).
+            Daily spending is enforced by the gateway against on-chain receipts on{" "}
+            <Link to="/spend" className="text-info hover:underline">Spend</Link>.
+          </p>
         </div>
-      )}
+      </div>
 
-      {/* --- lifetime counters ---------------------------------------------- */}
       {s && (
         <div className="mt-6 flex flex-wrap items-center gap-x-6 gap-y-2.5 border-t border-line-soft pt-4 text-[13px] text-dim">
-          <span className="flex items-center gap-2">
-            <span className="h-2 w-2 rounded-full bg-btc/60" />
-            lifetime funded <b className="tnum text-muted">{fmtMusd(s.lifetimeFunded, 4)}</b>
-          </span>
-          <span className="flex items-center gap-2">
-            <span className="h-2 w-2 rounded-full bg-bad/60" />
-            lifetime recalled <b className="tnum text-muted">{fmtMusd(s.lifetimeRecalled, 4)}</b>
-          </span>
           <span className="flex items-center gap-2">
             <Icon as={CircleCheck} size={13} className="text-ok" />
             payments <b className="tnum text-muted">{s.payments?.toString() || "0"}</b>
@@ -404,71 +326,69 @@ function YourAgent({ session, agentStatus, allowance, approved = false, onEnable
             <Icon as={ShieldCheck} size={13} className="text-bad" />
             refusals <b className="tnum text-muted">{s.denials?.toString() || "0"}</b>
           </span>
+          {allowance !== null && (
+            <span className="flex items-center gap-2">
+              <Icon as={Lock} size={13} className={approved ? "text-ok" : "text-warn"} />
+              permit2 {approved ? "approved" : "not approved"}
+            </span>
+          )}
         </div>
       )}
     </Card>
   );
 }
 
-
 // ---------------------------------------------------------------------------
-// Next steps — vertical timeline in the right rail
+// Onboarding — Wave 2 (no faucet)
 // ---------------------------------------------------------------------------
 
 const STEP_ICONS = [Wallet, Coins, ShieldCheck, PlugZap, ReceiptText];
 
-function NextSteps({ session, agentStatus, approved = false, onEnable = null }) {
+function NextSteps({ session, agentStatus, approved, approving, onEnable }) {
   const s = agentStatus.status;
   const hasWallet = Boolean(session.agentAddress);
-  const funded = agentStatus.registered === true;
+  const hasFloat = Boolean(s && BigInt(s.walletBalance || 0) > 0n);
   const hasPaid = Boolean(s && BigInt(s.payments || 0) > 0n);
 
-  // `always` means "keep the link after the step is done" — the ledger is a
-  // destination you return to, unlike the faucet claim you just made.
   const steps = [
     {
-      title: "Create agent wallet",
-      body: "Generated by Privy in a TEE — one wallet per identity, reattached on every login.",
+      title: "Connect & create agent",
+      body: "Reown connects your wallet. The gateway creates an encrypted server-side EOA tied to it.",
       done: hasWallet,
       to: null,
-      cta: hasWallet ? null : "Waiting on Privy…",
+      cta: hasWallet ? null : "Connect from the navbar",
     },
     {
-      title: "Claim 10 MUSD",
-      body: "Registers you as an agent with on-chain caps and drops the float. One claim per wallet per 48h.",
-      done: funded,
-      to: "/faucet",
-      cta: funded ? null : "Go to faucet",
+      title: "Borrow MUSD on Earn",
+      body: "Deposit BTC as collateral via Mezo BorrowerOperations, borrow MUSD, send it to your agent.",
+      done: hasFloat,
+      to: "/earn",
+      cta: hasFloat ? null : "Open Earn",
     },
     {
       title: "Enable payments",
-      // The step that used to be missing: without one approval from this wallet,
-      // every payment is refused with permit2_not_approved and the only remedy on
-      // offer was a developer script. It opens a popup, not a terminal.
-      body: "One approval from your wallet lets Permit2 settle x402 payments. You choose: this payment only, or all future ones.",
+      body: "One server-side MUSD.approve(Permit2) from your agent EOA. No browser signature from the wrong wallet.",
       done: approved,
-      to: null,
       onClick: onEnable,
-      cta: !hasWallet || approved ? null : "Approve Permit2",
+      cta: !hasWallet || approved ? null : (approving ? "Approving…" : "Enable Permit2"),
     },
     {
       title: "First x402 payment",
-      body: "Pay for a real HTTP resource with permit2-settled MUSD, bounded by your caps.",
+      body: "Pay for an HTTP resource with permit2-settled MUSD, bounded by your daily cap.",
       done: hasPaid,
       to: "/spend",
-      cta: hasPaid ? null : "Spend it",
+      cta: hasPaid ? null : "Spend",
     },
     {
       title: "Verify on ledger",
-      body: "Every payment and refusal, classified against the chain — not against the seller's word.",
+      body: "Every payment and refusal, classified against the chain.",
       done: hasPaid,
       to: "/ledger",
-      cta: hasPaid ? "Open ledger" : "View ledger",
+      cta: "Open ledger",
       always: true,
     },
   ];
 
-  // The first incomplete step is the one worth drawing the eye to.
   const current = steps.findIndex((st) => !st.done);
   const doneCount = steps.filter((st) => st.done).length;
 
@@ -477,7 +397,7 @@ function NextSteps({ session, agentStatus, approved = false, onEnable = null }) 
       icon={TrendingUp}
       tone="ok"
       title="Onboarding"
-      sub="Five steps from a login to a payment that is provably on chain."
+      sub="Self-funded path from connect → x402 payment."
       className="h-full"
       aside={
         <Badge tone={current === -1 ? "ok" : "btc"}>
@@ -485,7 +405,6 @@ function NextSteps({ session, agentStatus, approved = false, onEnable = null }) 
         </Badge>
       }
     >
-      {/* Progress, because "step 3 of 5" is a claim worth seeing as a bar. */}
       <div className="mb-5">
         <Meter
           pct={(doneCount / steps.length) * 100}
@@ -502,9 +421,7 @@ function NextSteps({ session, agentStatus, approved = false, onEnable = null }) 
       </div>
 
       <div className="relative">
-        {/* the rail the markers sit on */}
         <div className="absolute top-2 bottom-6 left-[13px] w-px bg-line-soft" />
-
         <div className="space-y-6">
           {steps.map((st, i) => {
             const isPast = st.done;
@@ -515,7 +432,6 @@ function NextSteps({ session, agentStatus, approved = false, onEnable = null }) 
 
             return (
               <div key={st.title} className="group relative flex flex-col pl-11">
-                {/* marker */}
                 <div
                   className={`absolute top-0 left-0 grid h-[27px] w-[27px] place-items-center rounded-full border-2 bg-ink transition-colors ${
                     isPast
@@ -530,8 +446,6 @@ function NextSteps({ session, agentStatus, approved = false, onEnable = null }) 
                     : <Icon as={Glyph} size={13} className={isFuture ? "opacity-60" : ""} />}
                 </div>
 
-                {/* Done steps recede but stay readable on hover: they are the
-                    record of what this wallet has already done. */}
                 <div className={isPast ? "opacity-65 transition-opacity hover:opacity-100" : ""}>
                   <h4 className={`text-[14.5px] leading-snug font-semibold tracking-tight ${isFuture ? "text-dim" : "text-text"}`}>
                     {st.title}
@@ -547,6 +461,8 @@ function NextSteps({ session, agentStatus, approved = false, onEnable = null }) 
                           className={isCurrent ? "" : "border border-line-soft"}
                           icon={isCurrent ? ShieldCheck : undefined}
                           onClick={st.onClick}
+                          disabled={approving}
+                          busy={approving && isCurrent}
                         >
                           {st.cta}
                         </Button>
@@ -556,6 +472,7 @@ function NextSteps({ session, agentStatus, approved = false, onEnable = null }) 
                             size="sm"
                             variant={isCurrent ? "primary" : "ghost"}
                             className={isCurrent ? "" : "border border-line-soft"}
+                            iconRight={isCurrent ? ArrowUpRight : undefined}
                           >
                             {st.cta}
                           </Button>
@@ -579,7 +496,7 @@ function NextSteps({ session, agentStatus, approved = false, onEnable = null }) 
 }
 
 // ---------------------------------------------------------------------------
-// Shared protocol state — deliberately last
+// Protocol section (treasury + demo agent + contracts)
 // ---------------------------------------------------------------------------
 
 function ProtocolSection({ health, loading, payments, denials, windowNote }) {
@@ -595,27 +512,23 @@ function ProtocolSection({ health, loading, payments, denials, windowNote }) {
 
   return (
     <section className="space-y-6">
-      {/* What the protocol as a whole has done. Same component as "your
-          activity" above, different inputs — so the two cannot disagree about
-          what a refusal looks like. */}
       <ActivityPanel
         scope="protocol"
         icon={Activity}
         tone="info"
         title="Protocol activity"
-        sub="Every agent wallet on this treasury, from the receipts the contract itself stored."
+        sub="Every agent wallet on this treasury — from receipts the contract stored."
         payments={payments}
         denials={denials}
         windowNote={windowNote}
       />
 
       <div className="grid items-start gap-6 lg:grid-cols-2">
-        {/* Treasury */}
         <Card
           icon={Landmark}
           tone="btc"
           title="Master Treasury"
-          sub="The vault every agent's float comes from, and goes back to."
+          sub="On-chain vault at the address verified on the explorer."
           aside={
             <>
               <Badge tone="info" icon={Lock}>on-chain vault</Badge>
@@ -646,18 +559,12 @@ function ProtocolSection({ health, loading, payments, denials, windowNote }) {
               <span className="tnum text-muted">{loading ? "…" : `${fmtMusd(treasury.totalRecalled, 2)} MUSD`}</span>
             </div>
           </div>
-
-          {treasury.paused && (
-            <Note tone="bad" className="mt-4" icon={Lock} title="Paused">
-              No further releases until the owner unpauses. Agents already holding float can still spend it — use
-              EMERGENCY STOP to sweep it back.
-            </Note>
-          )}
         </Card>
+
         <Card
           icon={Zap}
           title="Operator Demo Agent"
-          sub="The gateway's own wallet. It is not yours, and its budget is not your budget."
+          sub="The gateway's own wallet — not yours, not your budget."
           aside={
             <Badge tone={agent.registered ? "neutral" : "warn"} icon={agent.registered ? Lock : CircleAlert}>
               {agent.registered ? "gateway owned · not yours" : "not registered"}
@@ -667,120 +574,82 @@ function ProtocolSection({ health, loading, payments, denials, windowNote }) {
           {agent.registered ? (
             <>
               <Grid cols={3} className="gap-4 border-b border-line-soft pb-5">
-                {/* 4dp: this agent spends 0.001 per call, so 2dp would round the
-                    float away — the whole point of the number. */}
                 <Stat icon={Coins} label="Float" value={fmtMusd(agent.walletBalance, 4)} unit="MUSD" />
                 <Stat icon={Gauge} label="Per-call" value={fmtMusd(policy.perCallMax, 2)} unit="MUSD" />
-                {/* This agent's spend IS known — the gateway sums the treasury's
-                    on-chain receipts for it — so show the spending budget rather
-                    than the contract's funding counter. Falls back for a gateway
-                    too old to report it. */}
                 {policy.leftToday ? (
-                  <Stat icon={TrendingUp} label="Left to spend today" value={fmtMusd(policy.leftToday, 4)} unit="MUSD"
-                        hint={`${fmtMusd(policy.spentToday, 4)} spent · on-chain receipts`} />
+                  <Stat icon={TrendingUp} label="Left to spend today" value={fmtMusd(policy.leftToday, 4)} unit="MUSD" />
                 ) : (
-                  <Stat icon={Clock} label="Funding left today" value={fmtMusd(policy.remainingToday, 2)} unit="MUSD"
-                        hint="float the treasury may still release today — not a spend budget" />
+                  <Stat icon={Clock} label="Funding left today" value={fmtMusd(policy.remainingToday, 2)} unit="MUSD" />
                 )}
               </Grid>
-
-              {policy.leftToday && policy.dailyCap && (
-                <div className="mt-5 rounded-xl border border-line-soft bg-ink-dim p-4">
-                  <div className="mb-2.5 flex items-center justify-between text-[12.5px] text-dim">
-                    <span className="uppercase tracking-[0.06em]">today's spending cap</span>
-                    <span className="tnum text-[14px] font-semibold text-text">
-                      {fmtMusd(policy.spentToday, 4)} / {fmtMusd(policy.dailyCap, 4)}
-                    </span>
-                  </div>
-                  <Meter
-                    pct={Number(BigInt(policy.dailyCap) > 0n
-                      ? (BigInt(policy.spentToday || 0) * 10000n) / BigInt(policy.dailyCap)
-                      : 0n) / 100}
-                    label="share of the demo agent's daily cap spent"
-                  />
-                </div>
-              )}
-
               <dl className="dl mt-5 text-[13.5px]">
                 <dt>address</dt>
                 <dd className="text-right">{<AddressLink address={health?.agentWallet} />}</dd>
                 <dt>permit2 auth</dt>
                 <dd className="flex justify-end">
                   {permit2.ready
-                    ? <Badge tone="ok" icon={ShieldCheck}>granted — x402 can settle</Badge>
-                    : <Badge tone="bad" icon={Lock} title="Run: cd contract && npm run permit2:grant">missing — payments fail</Badge>}
-                </dd>
-                <dt>emergency recall</dt>
-                <dd className="flex justify-end">
-                  {BigInt(policy.recallAllowance || 0) > 0n
-                    ? <Badge tone="ok" icon={CircleCheck}>granted</Badge>
-                    : <Badge tone="warn" icon={Lock}>none — can pause, not sweep</Badge>}
-                </dd>
-                <dt>funding today</dt>
-                <dd className="tnum text-right">
-                  {fmtMusd(policy.dayFunded, 2)} of {fmtMusd(policy.dailyCap, 2)} MUSD
+                    ? <Badge tone="ok" icon={ShieldCheck}>granted</Badge>
+                    : <Badge tone="bad" icon={Lock}>missing</Badge>}
                 </dd>
               </dl>
             </>
           ) : (
-            <div className="flex h-full flex-col justify-center">
-              <Note tone="warn" icon={Wallet} title="No agent wallet is configured in the gateway">
-                Run <span className="code">npm run setup-agent</span> from the repo root. Until then the demo agent path on
-                the Spend page has nothing to sign with — your own wallet still works.
-              </Note>
-            </div>
+            <Note tone="warn" icon={Wallet} title="No demo agent configured">
+              Your personal agent still works via Earn → Fund → Spend.
+            </Note>
           )}
         </Card>
       </div>
 
-      {/* sMUSD vault + chain facts */}
       <div className="grid items-start gap-6 lg:grid-cols-3">
         <div className="lg:col-span-2">
           <Card
             icon={TrendingUp}
-            title="Yield surplus (sMUSD)"
-            sub="What idle float would earn, and why this app does not pretend it can."
-            aside={<Badge tone="warn" icon={Lock}>unavailable on testnet</Badge>}
+            title="Savings vault (sMUSD)"
+            sub="Idle agent float above the sweep threshold is deposited automatically."
+            aside={
+              <Badge tone={SAVINGS_VAULT?.available ? "ok" : "warn"} icon={SAVINGS_VAULT?.available ? CircleCheck : Lock}>
+                {SAVINGS_VAULT?.available ? "live on testnet" : "check config"}
+              </Badge>
+            }
           >
             <p className="mb-4 text-[14px] leading-relaxed text-muted">
-              {SAVINGS_VAULT.note || "The MUSD savings vault is not deployed on Mezo testnet."}
+              Vault <span className="font-mono text-[13px]">{SAVINGS_VAULT?.address || "0x6f46…e16"}</span>.
+              Gateway sweeps excess MUSD every few minutes and withdraws on demand before payments.
             </p>
             <Grid cols={2} className="gap-3">
               <div className="rounded-lg border border-line-soft bg-ink-dim p-3.5">
                 <span className="mb-1.5 flex items-center gap-2 text-[13.5px] font-semibold text-text">
-                  <Icon as={CircleCheck} size={14} className="text-ok" /> Not mocked
+                  <Icon as={CircleCheck} size={14} className="text-ok" /> Auto-sweep
                 </span>
                 <p className="text-[13px] leading-relaxed text-dim">
-                  The vault proxy holds 0 bytes of bytecode on testnet against 1,159 on mainnet, so there is nothing to
-                  deposit into. Rather than show a synthetic APR, the panel says so.
+                  Threshold 50 MUSD · interval 5 min · withdraw-before-sign on <span className="code">/api/pay</span>.
                 </p>
               </div>
               <div className="rounded-lg border border-line-soft bg-ink-dim p-3.5">
                 <span className="mb-1.5 flex items-center gap-2 text-[13.5px] font-semibold text-text">
-                  <Icon as={CircleCheck} size={14} className="text-ok" /> Not ERC-4626 either
+                  <Icon as={CircleCheck} size={14} className="text-ok" /> Self-funded
                 </span>
                 <p className="text-[13px] leading-relaxed text-dim">
-                  Every standard 4626 getter reverts on mainnet. The real interface is{" "}
-                  <span className="code">deposit</span>/<span className="code">withdraw</span>/
-                  <span className="code">token()</span>; yield accrues in the exchange rate, weekly.
+                  No faucet. Users deposit BTC on Earn, borrow MUSD, and fund their agent directly.
                 </p>
               </div>
             </Grid>
           </Card>
         </div>
 
-        <Card icon={Landmark} title="System contracts" sub="The addresses this deployment is built on.">
+        <Card icon={Landmark} title="System contracts" sub="Addresses this deployment is built on.">
           <div className="space-y-4">
             <div>
               <div className="mb-1 text-[12.5px] text-dim">Canonical MUSD</div>
-              <a
-                href={explorerToken(MUSD_ADDRESS)}
-                target="_blank"
-                rel="noreferrer"
-                className="font-mono text-[14px] text-info transition-colors hover:text-info/80"
-              >
+              <a href={explorerToken(MUSD_ADDRESS)} target="_blank" rel="noreferrer"
+                 className="font-mono text-[14px] text-info transition-colors hover:text-info/80">
                 {MUSD_ADDRESS.slice(0, 8)}…{MUSD_ADDRESS.slice(-6)}
               </a>
+            </div>
+            <div>
+              <div className="mb-1 text-[12.5px] text-dim">Treasury</div>
+              <div className="font-mono text-[14px] text-muted">0xf10e…Df79</div>
             </div>
             <div>
               <div className="mb-1 text-[12.5px] text-dim">Network</div>
@@ -791,33 +660,9 @@ function ProtocolSection({ health, loading, payments, denials, windowNote }) {
             <div>
               <div className="mb-1 text-[12.5px] text-dim">Gas</div>
               <div className="text-[14px] leading-snug text-muted">
-                {CHAIN.nativeCurrency.symbol} is gas, and x402 payments are sponsored by the facilitator — your float is
-                never spent on fees.
+                BTC is gas. x402 settlement is facilitator-sponsored — float is never spent on fees.
               </div>
             </div>
-            {health?.deployment && (
-              <div className="border-t border-line-soft pt-4">
-                <div className="mb-1.5 text-[12.5px] text-dim">how this gateway is deployed</div>
-                <div className="space-y-1.5 text-[13px] text-muted">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-dim">bind</span>
-                    <span className="font-mono">{health.deployment.public ? "public" : "loopback"}:{health.deployment.port}</span>
-                  </div>
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-dim">owner commands</span>
-                    {health.deployment.adminLocked
-                      ? <Badge tone="ok" icon={Lock}>token required</Badge>
-                      : <Badge tone="warn" icon={Lock}>open — local mode</Badge>}
-                  </div>
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-dim">state files</span>
-                    {health.deployment.persistentState
-                      ? <Badge tone="ok" icon={CircleCheck}>persistent disk</Badge>
-                      : <Badge tone="neutral">beside the code</Badge>}
-                  </div>
-                </div>
-              </div>
-            )}
           </div>
         </Card>
       </div>
@@ -826,21 +671,11 @@ function ProtocolSection({ health, loading, payments, denials, windowNote }) {
 }
 
 // ---------------------------------------------------------------------------
-// Alerts teaser — one row under the wallet, so the notification path is
-// discoverable from the page a user actually looks at.
-//
-// It READS the binding rather than assuming one. "Connected" is a claim about
-// the gateway's state and about a chat id stored server-side, and a wrong claim
-// here is worse than no claim: a user who believes alerts are on and gets none
-// is exactly the failure mode the alerts exist to prevent.
-//
-// Hidden while the wallet is unfunded — at that point the faucet owns the
-// page's attention, and there is nothing worth being alerted about yet.
+// Alerts teaser
 // ---------------------------------------------------------------------------
 
 function useTelegramBinding(address) {
   const [binding, setBinding] = useState(null);
-
   useEffect(() => {
     if (!address) { setBinding(null); return undefined; }
     let cancelled = false;
@@ -849,21 +684,20 @@ function useTelegramBinding(address) {
       .catch(() => { if (!cancelled) setBinding(null); });
     return () => { cancelled = true; };
   }, [address]);
-
   return binding;
 }
 
-function AlertsTeaser({ address, registered }) {
+function AlertsTeaser({ address }) {
   const tg = useTelegramBinding(address);
-  if (!address || registered === false) return null;
+  if (!address) return null;
 
   const copy = !tg
     ? "Reading your alert binding…"
     : !tg.enabled
-      ? "No bot is connected to this gateway yet. The one-time setup steps are on the Alerts page."
+      ? "No bot connected yet. Setup steps are on the Alerts page."
       : tg.subscribed
-        ? `Connected${tg.chatUsername ? ` as @${tg.chatUsername}` : ""}. Payments, refusals and cap changes arrive in Telegram as they happen.`
-        : "Not connected. Until you bind a chat, payments and refusals happen silently — binding takes one signature and no key.";
+        ? `Connected${tg.chatUsername ? ` as @${tg.chatUsername}` : ""}. Payments and refusals arrive in Telegram live.`
+        : "Not connected. Binding takes one signature — until then events are silent.";
 
   return (
     <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-line-soft bg-ink-dim/50 px-5 py-4">
@@ -886,8 +720,7 @@ function AlertsTeaser({ address, registered }) {
         </div>
       </div>
       <Link to="/alerts" className="shrink-0">
-        <Button size="sm" variant={tg?.subscribed ? "ghost" : "primary"}
-                icon={Bell}
+        <Button size="sm" variant={tg?.subscribed ? "ghost" : "primary"} icon={Bell}
                 className={tg?.subscribed ? "border border-line-soft" : ""}>
           {tg?.subscribed ? "Manage" : tg?.enabled ? "Connect" : "Set up"}
         </Button>
@@ -895,3 +728,4 @@ function AlertsTeaser({ address, registered }) {
     </div>
   );
 }
+

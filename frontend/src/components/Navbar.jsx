@@ -1,43 +1,8 @@
-// ---------------------------------------------------------------------------
-// Navbar.
-//
-// The links change with the session, because the two audiences want different
-// things:
-//
-//   signed out — Home, How it works, Protocol. A visitor is still deciding what
-//                this is; product routes would be dead ends behind a login.
-//   signed in  — Dashboard, Faucet, Spend, Ledger, Alerts, Operate. They have an
-//                agent wallet now and are here to use it.
-//
-// Each link carries an icon as well as a word. Nine pages of text-only nav is a
-// list to read; an icon makes the active page findable in peripheral vision,
-// which is what a navbar is actually for. The icons are aria-hidden — the label
-// is right there, so announcing both would just be noise.
-//
-// The brand always links home, so a signed-in user can still reach the marketing
-// surface, and /architecture stays publicly routable either way.
-//
-// RIGHT SIDE, SIGNED IN: an identity chip. It shows the same two lines it always
-// did (who you are, and your agent address) but it is a button that opens a menu
-// holding the things you actually want from a wallet chip — the FULL agent
-// address, click to copy, with confirmation; the connected external wallet when
-// there is one; the network you are on; and Sign out. Sign out lives in the menu
-// because a bare "Sign out" next to an address invites misclicks on the one
-// destructive action in the navbar, and because copying an address needs room the
-// header does not have.
-//
-// THE NETWORK BUTTON is deliberately OUTSIDE the menu as well: a wallet on the
-// wrong chain is a blocking condition, and hiding the fix behind a click is how
-// people conclude the button "doesn't work". It only renders on a measured wrong
-// chain (session.chainOk === false), never on "unknown" — offering a switch for a
-// wallet that has not been read yet produces a button that appears to do nothing.
-// ---------------------------------------------------------------------------
-
 import React, { useEffect, useRef, useState } from "react";
-import { NavLink, Link, useLocation } from "react-router-dom";
+import { NavLink, Link, useLocation, useNavigate } from "react-router-dom";
 import {
-  Activity, AlertTriangle, Bell, Check, ChevronDown, Copy, ExternalLink,
-  Faucet, Gauge, Home, Info, LayoutDashboard, LogOut, Menu, Network, PlugZap,
+  Activity, AlertTriangle, Bell, Check, ChevronDown, Coins, Copy, ExternalLink,
+  Gauge, Home, Info, LayoutDashboard, LogOut, Menu, Network, PlugZap,
   RefreshCw, Server, TriangleAlert, Wallet, Waypoints, X,
 } from "lucide-react";
 import { useSession } from "../lib/session.jsx";
@@ -55,7 +20,7 @@ const PUBLIC_LINKS = [
 
 const APP_LINKS = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { to: "/faucet", label: "Faucet", icon: Faucet },
+  { to: "/earn", label: "Earn", icon: Coins },   // ← capital E, valid icon
   { to: "/operate", label: "Operate", icon: Gauge },
   { to: "/spend", label: "Spend", icon: PlugZap },
   { to: "/ledger", label: "Ledger", icon: Activity },
@@ -198,26 +163,21 @@ export default function Navbar({ health }) {
  * injected/Reown session shape, so it must be mapped to words — rendering it
  * directly printed nothing at all, and the chip looked empty.
  */
-function identityLabel(user) {
-  return (
-    user?.email?.address ||
-    user?.google?.email ||
-    (user?.connectedWallet ? "connected wallet" : null) ||
-    (user?.id ? `${String(user.id).slice(0, 10)}…` : null) ||
-    "signed in"
-  );
+function identityLabel(session) {
+  const primary = session.primaryAddress;
+  if (primary) return short(primary, 4);
+  return "signed in";
 }
 
 function WalletArea({ session }) {
-  // No App ID: say so rather than rendering a button that cannot work.
   if (!session.configured) {
     return (
-      <Badge tone="warn" icon={AlertTriangle} title="Set VITE_PRIVY_APP_ID in frontend/.env to enable Google/email sign-in">
-        <Dot tone="warn" /> Privy not configured
+      <Badge tone="warn" icon={AlertTriangle}
+        title="Set VITE_REOWN_PROJECT_ID in frontend/.env to enable wallet connection">
+        <Dot tone="warn" /> Reown not configured
       </Badge>
     );
   }
-
   if (!session.ready) {
     return (
       <span className="flex items-center gap-2 text-[13px] text-dim">
@@ -226,22 +186,20 @@ function WalletArea({ session }) {
       </span>
     );
   }
-
   if (!session.user) {
     return (
       <button
         className="btn btn-primary cursor-pointer"
         onClick={session.login}
         disabled={session.authenticating}
-        title="Sign in with Google or email — this creates your agent wallet"
+        title="Connect your wallet — AgentFloat will create a server-side agent wallet tied to it"
       >
         {session.authenticating
-          ? <><Icon as={RefreshCw} size={15} className="ring-spin" /> Opening…</>
-          : <><Icon as={Wallet} size={15} /> Sign in</>}
+          ? <><Icon as={RefreshCw} size={15} className="ring-spin" /> Connecting…</>
+          : <><Icon as={Wallet} size={15} /> Connect wallet</>}
       </button>
     );
   }
-
   return (
     <div className="flex items-center gap-2">
       <NetworkButton session={session} />
@@ -289,65 +247,64 @@ function NetworkButton({ session }) {
 
 function UserMenu({ session }) {
   const [open, setOpen] = useState(false);
-  const [copied, setCopied] = useState(null); // "agent" | "external"
+  const [copied, setCopied] = useState(null); // "agent" | "primary"
   const wrap = useRef(null);
   const timer = useRef(null);
   const location = useLocation();
+  const navigate = useNavigate();
 
-  const label = identityLabel(session.user);
+  const label = identityLabel(session);
   const agentAddress = session.agentAddress || null;
-  const external = session.externalWallets?.[0] || null;
-  const kind = session.agentWallet?.walletClientType === "privy" ? "embedded EOA" : "external EOA";
+  const primaryAddress = session.primaryAddress || null;
 
-  // Close on outside click, Escape, and navigation. A menu that survives a route
-  // change floats over the next page with no way to tell it belongs to the last.
-  useEffect(() => {
-    if (!open) return undefined;
-    const onDown = (e) => { if (wrap.current && !wrap.current.contains(e.target)) setOpen(false); };
-    const onKey = (e) => { if (e.key === "Escape") setOpen(false); };
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
 
-  useEffect(() => { setOpen(false); }, [location.pathname]);
-  useEffect(() => () => clearTimeout(timer.current), []);
+  // --- sign out ---
+  async function onSignOut() {
+    setOpen(false);
+    try {
+      await session.logout();
+    } catch (e) {
+      console.error("Sign-out failed:", e);
+    }
+    navigate("/");
+  }
 
-  const copy = async (which, value) => {
-    const ok = await copyText(value);
-    if (!ok) return;
+  // --- copy helper ---
+  function copy(which, text) {
+    copyText(text);
     setCopied(which);
     clearTimeout(timer.current);
-    timer.current = setTimeout(() => setCopied(null), 1800);
-  };
+    timer.current = setTimeout(() => setCopied(null), 2000);
+  }
 
-  const onSignOut = async () => {
+  // Close dropdown on outside click
+  useEffect(() => {
+    function handleClick(e) {
+      if (wrap.current && !wrap.current.contains(e.target)) {
+        setOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, []);
+
+  // Close dropdown on route change
+  useEffect(() => {
     setOpen(false);
-    setCopied(null);
-    await session.logout();
-  };
+  }, [location.pathname]);
 
-  const netTone = session.chainOk === true ? "ok" : session.chainOk === false ? "bad" : "warn";
-  const netLabel =
-    session.chainOk === true
-      ? `${CHAIN.name} · ${MEZO_TESTNET_ID}`
-      : session.chainOk === false
-        ? `wrong network · chain ${session.chainId || "unknown"}`
-        : "checking network…";
 
+  // ... keep all the useEffects unchanged ...
+
+  // Trigger button — show primary short + agent short
   return (
     <div className="relative" ref={wrap}>
-      {/* The chip keeps showing what it always showed — who you are, and your
-          agent address — so nothing is lost by moving Sign out into the menu. */}
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
         aria-haspopup="dialog"
-        title="Your agent wallet — click to copy the address or sign out"
+        title="Your wallets — click to copy or sign out"
         className={`flex cursor-pointer items-center gap-2.5 rounded-lg border px-2 py-1.5 transition-colors ${
           open ? "border-line bg-panel-2" : "border-transparent hover:border-line hover:bg-panel-2"
         }`}
@@ -356,50 +313,60 @@ function UserMenu({ session }) {
           {label.charAt(0).toUpperCase()}
         </span>
         <span className="hidden text-left leading-tight md:block">
-          <span className="block max-w-[140px] truncate text-[13px] font-medium text-text">{label}</span>
+          <span className="block max-w-[140px] truncate text-[13px] font-medium text-text">
+            {primaryAddress ? short(primaryAddress, 4) : label}
+          </span>
           <span className="block font-mono text-[11.5px] text-dim">
-            {agentAddress ? short(agentAddress, 4) : "creating wallet…"}
+            agent: {agentAddress ? short(agentAddress, 4) : "creating…"}
           </span>
         </span>
         <Icon as={ChevronDown} size={14} className={`text-dim transition-transform ${open ? "rotate-180" : ""}`} />
       </button>
 
+      {/* Dropdown body — replace the "signed in as" and "connected wallet" blocks */}
       {open && (
-        <div
-          role="dialog"
-          aria-label="Your agent wallet"
-          className="absolute right-0 z-50 mt-2 w-[min(360px,calc(100vw-2rem))] overflow-hidden rounded-xl border border-line bg-panel shadow-2xl"
-        >
-          {/* identity */}
-          <div className="flex items-start justify-between gap-3 px-4 py-3.5">
-            <div className="min-w-0">
-              <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-dim">signed in as</div>
-              <div className="mt-1 truncate text-[14.5px] font-medium text-text" title={label}>
-                {label}
-              </div>
+        <div role="dialog" aria-label="Your wallets"
+          className="absolute right-0 z-50 mt-2 w-[min(360px,calc(100vw-2rem))] overflow-hidden rounded-xl border border-line bg-panel shadow-2xl">
+
+          {/* Primary (connected) wallet */}
+          <div className="px-4 py-3.5">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-dim">
+                connected wallet
+              </span>
+              <Badge tone="info" icon={Wallet}>Reown</Badge>
             </div>
-            <Badge tone="info" icon={Wallet} title="How the agent wallet is held">
-              {kind}
-            </Badge>
+            {primaryAddress ? (
+              <button type="button"
+                onClick={() => copy("primary", primaryAddress)}
+                title="Copy the full address"
+                className="mt-2.5 flex w-full cursor-pointer items-center justify-between gap-2.5 rounded-lg border border-line-soft bg-ink-dim px-3 py-2.5 text-left transition-colors hover:border-faint">
+                <span className="min-w-0 break-all font-mono text-[12.5px] leading-snug text-text">
+                  {primaryAddress}
+                </span>
+                <span className={`shrink-0 ${copied === "primary" ? "text-ok" : "text-dim"}`}>
+                  <Icon as={copied === "primary" ? Check : Copy} size={14} />
+                </span>
+              </button>
+            ) : (
+              <div className="mt-2.5 text-[12.5px] text-dim">no wallet connected</div>
+            )}
           </div>
 
-          {/* the agent wallet — the thing people actually want to copy */}
+          {/* Agent wallet — the server-side EOA */}
           <div className="border-t border-line-soft px-4 py-3.5">
             <div className="flex items-center justify-between gap-2">
-              <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-dim">your agent wallet</span>
+              <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-dim">
+                your agent wallet
+              </span>
               {session.isOperator && <Badge tone="btc">operator</Badge>}
             </div>
-
             {agentAddress ? (
               <>
-                {/* Whole row is the copy target: that is the interaction asked
-                    for, and a separate icon alone would be missed. */}
-                <button
-                  type="button"
+                <button type="button"
                   onClick={() => copy("agent", agentAddress)}
                   title="Copy the full address"
-                  className="mt-2.5 flex w-full cursor-pointer items-center justify-between gap-2.5 rounded-lg border border-line-soft bg-ink-dim px-3 py-2.5 text-left transition-colors hover:border-faint"
-                >
+                  className="mt-2.5 flex w-full cursor-pointer items-center justify-between gap-2.5 rounded-lg border border-line-soft bg-ink-dim px-3 py-2.5 text-left transition-colors hover:border-faint">
                   <span className="min-w-0 break-all font-mono text-[12.5px] leading-snug text-text">
                     {agentAddress}
                   </span>
@@ -409,14 +376,10 @@ function UserMenu({ session }) {
                 </button>
                 <div className="mt-2 flex items-center justify-between gap-2 text-[12.5px]">
                   <span className="text-dim">
-                    {copied === "agent" ? "on your clipboard" : "click to copy"}
+                    {copied === "agent" ? "on your clipboard" : "server-side EOA — signs x402 payments"}
                   </span>
-                  <a
-                    href={explorerAddress(agentAddress)}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex items-center gap-1 text-info hover:underline"
-                  >
+                  <a href={explorerAddress(agentAddress)} target="_blank" rel="noreferrer"
+                    className="inline-flex items-center gap-1 text-info hover:underline">
                     explorer <Icon as={ExternalLink} size={12} />
                   </a>
                 </div>
@@ -424,69 +387,49 @@ function UserMenu({ session }) {
             ) : (
               <div className="mt-2.5 rounded-lg border border-warn/30 bg-warn-dim/50 px-3 py-2.5">
                 <div className="flex items-center gap-2 text-[13.5px] font-medium text-warn">
-                  <Icon as={RefreshCw} size={14} className="ring-spin" /> creating wallet…
+                  <Icon as={RefreshCw} size={14} className="ring-spin" /> creating agent wallet…
                 </div>
                 <p className="mt-1.5 text-[12.5px] leading-relaxed text-muted">
-                  Privy provisions it right after sign-in. Google takes a little longer than email
-                  because of the OAuth round-trip; it is created once and reattached on every later
-                  login.
+                  AgentFloat is generating a server-side EOA tied to your connected wallet.
+                  The private key is encrypted at rest and only decrypted per-payment.
                 </p>
               </div>
             )}
           </div>
 
-          {/* a connected external wallet, when there is one */}
-          {external?.address && external.address !== agentAddress && (
-            <div className="border-t border-line-soft px-4 py-3.5">
-              <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-dim">connected wallet</div>
-              <button
-                type="button"
-                onClick={() => copy("external", external.address)}
-                title="Copy the full address"
-                className="mt-2.5 flex w-full cursor-pointer items-center justify-between gap-2.5 rounded-lg border border-line-soft bg-ink-dim px-3 py-2.5 text-left transition-colors hover:border-faint"
-              >
-                <span className="min-w-0 break-all font-mono text-[12.5px] leading-snug text-muted">
-                  {external.address}
-                </span>
-                <span className={`shrink-0 ${copied === "external" ? "text-ok" : "text-dim"}`}>
-                  <Icon as={copied === "external" ? Check : Copy} size={14} />
-                </span>
-              </button>
-            </div>
-          )}
-
-          {/* network */}
+            {/* network */}
           <div className="flex items-center justify-between gap-2 border-t border-line-soft px-4 py-3">
-            <span className="flex min-w-0 items-center gap-2 text-[13px] text-muted">
-              <Dot tone={netTone} pulse={netTone !== "ok"} />
-              <span className="truncate">{netLabel}</span>
-            </span>
-            {session.chainOk === false && (
-              <button
-                className="btn btn-sm cursor-pointer shrink-0"
-                onClick={() => { session.fixNetwork().catch(() => {}); }}
-                disabled={session.networkBusy}
-                title={`Switch this wallet to ${CHAIN.name} (${MEZO_TESTNET_ID})`}
-              >
-                <Icon as={session.networkBusy ? RefreshCw : Network} size={13} className={session.networkBusy ? "ring-spin" : ""} />
-                {session.networkBusy ? "switching…" : "Switch"}
-              </button>
-            )}
+            <span className="text-[12.5px] text-dim">Network</span>
+            <div className="flex items-center gap-1.5">
+              <Dot tone={session.chainOk !== false ? "ok" : "warn"} />
+              <span className="text-[12.5px] font-medium text-text">
+                {CHAIN.name}
+              </span>
+              {session.chainOk === false && (
+                <button
+                  className="ml-1 text-[11px] text-warn underline hover:text-warn/80"
+                  onClick={() => session.fixNetwork().catch(() => {})}
+                  disabled={session.networkBusy}
+                >
+                  switch
+                </button>
+              )}
+            </div>
           </div>
 
-          {/* sign out */}
+          {/* sign out — update copy */}
           <div className="border-t border-line px-3 py-3.5">
             <button
               className="btn btn-danger w-full cursor-pointer"
               onClick={onSignOut}
-              title="Sign out of Privy. Your agent wallet and its balance stay on chain, and the same login gets them back."
+              title="Disconnect your wallet. The agent wallet and its MUSD stay on chain; reconnecting the same wallet restores access."
             >
               <Icon as={LogOut} size={15} />
               Sign out
             </button>
             <p className="mt-2.5 px-1 text-[12px] leading-relaxed text-dim">
-              Signing out does not touch your wallet or its balance — the same login reattaches the
-              same address.
+              Signing out disconnects your wallet. The agent wallet, its MUSD and any open trove
+              stay on chain — reconnecting the same wallet restores access.
             </p>
           </div>
         </div>

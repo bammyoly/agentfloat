@@ -32,7 +32,6 @@
     "dev:all": "concurrently -n gateway,web -c yellow,cyan \"npm run gateway\" \"npm run dev\""
   },
   "dependencies": {
-    "@privy-io/react-auth": "^3.51.0",
     "@reown/appkit": "^1.8.24",
     "@reown/appkit-adapter-ethers": "^1.8.24",
     "@x402/core": "^2.28.0",

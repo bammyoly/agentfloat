@@ -229,8 +229,7 @@ function Connected({ session, gatewayOnline }) {
           sub="Payments, refusals and budget changes, pushed to your phone." />
         <Card icon={Bell} title="Your alerts" aside={<Badge tone="bad"><Dot tone="bad" /> gateway offline</Badge>}>
           <Note tone="bad">
-            The gateway that holds the bot connection is not answering. Start it in a second terminal with{" "}
-            <span className="code">npm run gateway</span> from the project root, then reload this page.
+            The gateway that holds the bot connection is not answering. Reload the page or try again when it responds
           </Note>
         </Card>
       </div>

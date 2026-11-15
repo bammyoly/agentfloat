@@ -25,11 +25,11 @@ import Home from "./pages/Home.jsx";
 import Dashboard from "./pages/Dashboard.jsx";
 import Spend from "./pages/Spend.jsx";
 import Ledger from "./pages/Ledger.jsx";
-import Faucet from "./pages/Faucet.jsx";
 import Operate from "./pages/Operate.jsx";
 import Alerts from "./pages/Alerts.jsx";
 import Architecture from "./pages/Architecture.jsx";
 import Diagnose from "./pages/Diagnose.jsx";
+import EarnPage from "./pages/EarnPage.jsx";
 
 /**
  * Browsers restrict WebCrypto (`crypto.randomUUID`, `crypto.subtle`) and injected
@@ -145,7 +145,7 @@ function Shell() {
           <Route path="/dashboard" element={<RequireSession><Dashboard /></RequireSession>} />
           <Route path="/spend" element={<RequireSession><Spend /></RequireSession>} />
           <Route path="/ledger" element={<RequireSession><Ledger /></RequireSession>} />
-          <Route path="/faucet" element={<RequireSession><Faucet /></RequireSession>} />
+          <Route path="/earn" element={<RequireSession><EarnPage /></RequireSession>} />
           <Route path="/alerts" element={<RequireSession><Alerts /></RequireSession>} />
           <Route path="/operate" element={<RequireSession><Operate /></RequireSession>} />
 
@@ -164,3 +164,4 @@ export default function App() {
     </AppDataProvider>
   );
 }
+

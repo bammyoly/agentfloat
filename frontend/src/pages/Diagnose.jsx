@@ -28,8 +28,6 @@ import { Gauge, Stethoscope } from "lucide-react";
 
 import { Badge, Button, Card, Dot, Note, PageHeader } from "../components/ui.jsx";
 import { useSession } from "../lib/session.jsx";
-import { PRIVY_APP_ID, IS_PRIVY_CONFIGURED } from "../lib/privy.js";
-import { scanDom, privyStructuralFault } from "../lib/privy-dom.js";
 
 // The origins `npm run check:privy` last confirmed are in the dashboard's
 // allowed_domains. Compared against window.location.origin below.

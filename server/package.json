@@ -3,11 +3,11 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "AgentFloat policy gateway \u2014 enforces spending rules and signs x402 MUSD payments for the agent wallet",
+  "description": "AgentFloat policy gateway — enforces spending rules and signs x402 MUSD payments for the agent wallet",
   "main": "agent-gateway.js",
   "scripts": {
     "start": "node agent-gateway.js",
-    "//dev": "Alias for `start`, so `npm run dev` works here too. `dev` is NOT a watch/reload script \u2014 the gateway is plain Node, there is nothing to recompile. Use the ROOT `npm run dev` to get gateway + dashboard together.",
+    "//dev": "Alias for `start`, so `npm run dev` works here too. `dev` is NOT a watch/reload script — the gateway is plain Node, there is nothing to recompile. Use the ROOT `npm run dev` to get gateway + dashboard together.",
     "dev": "node agent-gateway.js",
     "test:faucet": "node faucet-test.js",
     "test:gateway": "node test-gateway.mjs",
@@ -30,10 +30,11 @@
     "dotenv": "^18.0.8",
     "ethers": "^6.17.0",
     "express": "^4.21.2",
+    "mongoose": "^9.12.0",
     "viem": "2.57.7"
   },
   "overrides": {
     "@solana/kit": "6.9.0"
   },
-  "//overrides": "@x402 packages pull a transitive Solana SDK whose 6.10.0 release references unpublished sub-packages, which breaks npm install even for EVM-only use. Pinning 6.9.0 is Mezo's documented workaround. See DEPLOYMENT-BRIEF.md \u00a76."
+  "//overrides": "@x402 packages pull a transitive Solana SDK whose 6.10.0 release references unpublished sub-packages, which breaks npm install even for EVM-only use. Pinning 6.9.0 is Mezo's documented workaround. See DEPLOYMENT-BRIEF.md §6."
 }

@@ -1,58 +1,12 @@
-// ---------------------------------------------------------------------------
-// Spend — buy a paid API with x402.
-//
-// THREE PATHS, and the difference between them is who signs and who fetches:
-//
-//   your wallet · relay   YOU sign in the browser, the GATEWAY fetches. Works
-//                         against any seller, because CORS is a browser rule and
-//                         Node has no such rule. This is the default, and it is
-//                         the reason a normal user can now pay Mezo's hosted demo
-//                         — which used to fail with "Failed to fetch".
-//
-//   your wallet · direct  You sign AND the browser fetches. Only works against a
-//                         seller that sends Access-Control-Allow-Origin. Kept
-//                         because it proves the relay is not load-bearing for the
-//                         signature: nothing about the payment changes, only who
-//                         carries the HTTP request.
-//
-//   gateway demo agent    The operator's key signs server-side. Useful for a demo
-//                         with no sign-in, and it is the path that was verified on
-//                         testnet first.
-//
-// In every path the key that signs is the key that pays, policy is checked
-// against the REAL quoted price before anything is signed, and the outcome is
-// verified against the chain rather than believed from an HTTP status.
-//
-// AND A FOURTH CHOICE: HOW OFTEN
-//   Once a quote exists the user picks "pay once" or "run automatically". The
-//   automation repeats THIS purchase on a schedule, and its purpose is to make the
-//   budget controls visible without anybody clicking Pay forty times: the panel
-//   predicts which run the cap will refuse, then the run log shows the gateway
-//   refusing exactly that run, with the denial written on chain. Lower a daily cap
-//   on /operate, start the loop, and watch it stop itself.
-//
-//   The loop calls the SAME purchase() the Pay button calls. That is deliberate:
-//   two code paths would mean the demo proves something the product does not do.
-//   All the arithmetic (classification, totals, when to stop, the projection, and
-//   which of the five steps a refusal happened at) is pure and lives in
-//   lib/autopay.js with its own offline tests.
-//
-// THE STEPPER IS AN INSTRUMENT, NOT A CAPTION
-//   FlowStepper renders flowStep()'s answer, so the five stages of a purchase show
-//   where the money actually got to. A refusal lands on the step that produced it
-//   and the steps after it stay unreached — which is what makes "the daily cap
-//   stopped run six" legible in one glance instead of requiring the reader to
-//   parse a JSON refusal.
-// ---------------------------------------------------------------------------
-
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   ArrowRight, BadgeDollarSign, Ban, Check, CircleAlert, CircleCheck, CircleHelp,
-  CircleSlash, Clock, Coins, Gauge, Landmark, Minus, PenLine, Play, PlugZap,
+  CircleSlash, Clock, Coins, Gauge, Landmark, Lock, Minus, PenLine, Play, PlugZap,
   ReceiptText, RefreshCw, Repeat, RotateCcw, Send, ShieldCheck, Square, Timer,
   TrendingUp, Wallet, X, Zap,
 } from "lucide-react";
+import { quote, pay, relayProbe } from "../lib/gateway.js";
 import { useAppData } from "../lib/app-data.jsx";
 import { useSession } from "../lib/session.jsx";
 import { REASON_LABEL, useAgentStatus } from "../lib/agent-status.jsx";
@@ -64,9 +18,9 @@ import {
   AddressLink, Badge, Button, Card, Dot, Field, Grid, Icon, IconTile, Meter,
   MoreLink, Note, PageHeader, Segmented, Stat, Table, TxLink,
 } from "../components/ui.jsx";
-import { quote, pay, recordSettlement, relayProbe, relayExecute } from "../lib/gateway.js";
-import { makeBrowserPayer, makeRelaySigner, probeUnpaid } from "../lib/x402-browser.js";
-import { readAllowance } from "../lib/permit2.js";
+import { readAllowance } from "../lib/permit2.js";          // ← add back
+import { approveAgentPermit2 } from "../lib/agent-permit2.js"; // ← add back
+import { probeUnpaid } from "../lib/x402-browser.js";
 import ApprovalModal from "../components/ApprovalModal.jsx";
 import { fmtMusd, short } from "../lib/chain.js";
 import { CHAIN, MUSD_ADDRESS } from "../contracts/index.js";
@@ -79,6 +33,26 @@ const STEP_ICON = {
   signature: PenLine,
   settle: Landmark,
 };
+
+
+// Resolves relative paths like "/paid/insight" to full URLs using current browser origin
+// Resolves relative built-in seller paths to the gateway's internal selfUrl
+function resolveUrl(u, health) {
+  const s = String(u || "").trim();
+  if (!s) return s;
+
+  // Built-in seller relative path (/paid/...) -> resolve to gateway selfUrl
+  if ((s.startsWith("/paid/") || s === health?.seller?.browserUrl) && health?.seller?.selfUrl) {
+    return health.seller.selfUrl;
+  }
+
+  // Any other relative path -> fallback to browser origin
+  if (s.startsWith("/")) {
+    return typeof window !== "undefined" ? `${window.location.origin}${s}` : s;
+  }
+
+  return s;
+}
 
 export default function Spend() {
   const { health, refresh } = useAppData();
@@ -93,187 +67,151 @@ export default function Spend() {
   // production) resolves it. Falls back to the loopback URL for an older gateway.
   const sellerBrowserUrl = health?.seller?.browserUrl || sellerUrl;
 
-  const [url, setUrl] = useState("https://demo.vativ.io/");
+  // ── dynamic default URL ────────────────────────────────────────────
+  // In local dev this resolves to http://127.0.0.1:4022/paid/insight;
+  // in production it resolves to /paid/insight (same-origin proxy).
+  // The external demo is the fallback when no built-in seller is mounted.
+  const defaultUrl = sellerBrowserUrl || "https://demo.vativ.io/";
+
+  const [url, setUrl] = useState(defaultUrl);
   const [payer, setPayer] = useState(session.agentAddress ? "own" : "gateway");
   const [path, setPath] = useState("relay");
   const [busy, setBusy] = useState(null); // "quote" | "signing" | "settling"
   const [q, setQ] = useState(null);
   const [probe, setProbe] = useState(null); // relay probe, kept for signing
-  // The probe response does not echo the URL it belongs to, so track it here.
-  // Without this, every "Pay" re-probed the seller even one click after a
-  // "Quote" — a wasted round trip, and a second fetch that could in principle
-  // return different requirements than the quote the user just read.
   const [probeUrl, setProbeUrl] = useState(null);
   const [result, setResult] = useState(null);
   const [err, setErr] = useState(null);
-  // The MUSD → Permit2 allowance of the signed-in wallet. Without it EVERY payment
-  // is refused with permit2_not_approved, and the remedy used to be a developer
-  // script. Read once on mount and again after the popup closes: the allowance only
-  // changes when this wallet sends an approval, so polling would be noise.
+
+  // ── Permit2 status (server-side approval, same flow as Dashboard) ──
   const [allowance, setAllowance] = useState(null);
+  const [approving, setApproving] = useState(false);
+  const [approveError, setApproveError] = useState("");
   const [approvalOpen, setApprovalOpen] = useState(false);
   const [approvedTx, setApprovedTx] = useState(null);
+
   // --- automation: "pay once" vs "run automatically" -------------------------
-  // The run log IS the state machine. Nothing is counted in a ref, because a
-  // second source of truth is how a loop ends up running forever: after every run
-  // shouldContinue() is asked, from the log, and it alone decides whether the next
-  // timer is armed.
   const [buyMode, setBuyMode] = useState("once");      // "once" | "auto"
   const [schedule, setSchedule] = useState(DEFAULT_SCHEDULE);
   const [runs, setRuns] = useState([]);
   const [autoRunning, setAutoRunning] = useState(false);
 
+  // ── Permit2: read allowance from chain ─────────────────────────────
   const refreshAllowance = useCallback(async () => {
     if (!session.agentAddress) { setAllowance(null); return; }
-    setAllowance(await readAllowance(session.agentAddress));
+    try {
+      setAllowance(await readAllowance(session.agentAddress));
+    } catch {
+      setAllowance(0n);
+    }
   }, [session.agentAddress]);
 
   useEffect(() => { refreshAllowance(); }, [refreshAllowance]);
+
+  const paymentsEnabled = Boolean(allowance && allowance > 0n);
+
+  // ── Permit2: server-side enable (agent EOA signs MUSD.approve) ─────
+  async function onEnablePayments() {
+    setApproveError("");
+    setApproving(true);
+    try {
+      await approveAgentPermit2();
+      await refreshAllowance();
+    } catch (e) {
+      setApproveError(e.message || "Approval failed");
+    } finally {
+      setApproving(false);
+    }
+  }
+
+  // ── auto-switch URL to built-in seller once health loads ───────────
+  // Only fires when the URL is still the external demo default, so it
+  // never overrides a URL the user has already typed or selected.
+  useEffect(() => {
+    if (sellerBrowserUrl && url === "https://demo.vativ.io/") {
+      setUrl(sellerBrowserUrl);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sellerBrowserUrl]);
 
   const canUseOwn = Boolean(session.agentAddress);
   const effectivePayer = payer === "own" && !canUseOwn ? "gateway" : payer;
   const via = effectivePayer === "gateway" ? "gateway" : path === "relay" ? "relay" : "browser";
 
-  // The caps that bind a run are the caps of the wallet that SIGNS. Paying through
-  // the demo agent means the demo agent's caps, and showing the user's own numbers
-  // next to a refusal caused by somebody else's cap would be a lie on screen.
-  // Polled only when it is a different address — `mine` already reads this one.
   const demoAgent = useAgentStatus(
     effectivePayer === "gateway" ? health?.agentWallet || null : null
   );
   const budget = effectivePayer === "gateway" ? demoAgent : mine;
 
+  // ── presets: built-in seller first (recommended), external second ──
   const presets = useMemo(
     () =>
       [
-        { label: "Mezo hosted demo", detail: "$0.001 · no CORS", url: "https://demo.vativ.io/", cors: false },
         sellerMounted && sellerBrowserUrl
-          ? { label: "built-in demo seller", detail: `${health?.seller?.price} · gateway-hosted`, url: sellerBrowserUrl, cors: true }
+          ? {
+              label: "Built-in demo seller",
+              detail: `${health?.seller?.price || "$0.001"} · gateway-hosted`,
+              url: sellerBrowserUrl,
+              cors: true,
+              recommended: true,
+            }
           : null,
+        {
+          label: "Mezo hosted demo",
+          detail: "$0.001 · external",
+          url: "https://demo.vativ.io/",
+          cors: false,
+        },
       ].filter(Boolean),
     [sellerMounted, sellerBrowserUrl, health?.seller?.price]
   );
 
   function reset(keepUrl = true) {
-    if (!keepUrl) setUrl("https://demo.vativ.io/");
+    if (!keepUrl) setUrl(defaultUrl);
     setQ(null); setProbe(null); setProbeUrl(null); setResult(null); setErr(null);
-    // A different endpoint, payer or path is a different purchase, so the run log
-    // describing the old one has to go with it.
     setRuns([]); setAutoRunning(false);
   }
 
   // --- quote: learn the price without signing anything ----------------------
   async function onQuote() {
     setBusy("quote"); setErr(null); setResult(null); setQ(null); setProbe(null); setProbeUrl(null);
+    const targetUrl = resolveUrl(url, health); // ← PASS health HERE
     try {
       if (effectivePayer === "gateway") {
-        const r = await quote(url);
+        const r = await quote(targetUrl);
         if (r.unreachable) throw new Error("gateway unreachable — is it running?");
         if (!r.ok) throw new Error(r.error || `quote failed (HTTP ${r.status})`);
         setQ({ ...r, via: "gateway", atRun: runs.length });
       } else if (path === "relay") {
-        const r = await relayProbe(url, session.agentAddress);
+        const r = await relayProbe(targetUrl, session.agentAddress);
         if (r.unreachable) throw new Error("gateway unreachable — the relay lives in the gateway process");
         if (!r.ok) throw new Error(r.error || `relay probe failed (HTTP ${r.status})`);
-        setProbe(r); setProbeUrl(url);
+        setProbe(r); setProbeUrl(targetUrl);
         setQ({ ...r, via: "relay", atRun: runs.length });
       } else {
-        const probed = await probeUnpaid(url);
+        const probed = await probeUnpaid(targetUrl);
         setQ({ ...probed, via: "browser", atRun: runs.length });
       }
     } catch (e) {
-      setErr(explainFetchError(e, { via, url }));
+      setErr(explainFetchError(e, { via, url: targetUrl }));
     } finally {
       setBusy(null);
     }
   }
 
   // --- one purchase ----------------------------------------------------------
-  /**
-   * Probe → sign → settle → verify, and RETURN the result rather than render it.
-   *
-   * Both the Pay button and the automation loop call this. One implementation is
-   * the point: if the loop had its own path, the demo would prove something the
-   * product does not do.
-   */
   const purchase = useCallback(async ({ atRun = 0 } = {}) => {
-    if (effectivePayer === "gateway") {
-      setBusy("settling");
-      const r = await pay(url);
-      if (r.unreachable) throw new Error("gateway unreachable — is it running?");
-      return { ...r, via: "gateway" };
-    }
-
-    if (path === "relay") {
-      // Probe first if the user went straight to pay: the signature has to
-      // cover the seller's actual requirements, not a guess.
-      let p = probe;
-      if (!p || probeUrl !== url) {
-        setBusy("quote");
-        p = await relayProbe(url, session.agentAddress);
-        if (!p.ok) throw new Error(p.error || `relay probe failed (HTTP ${p.status})`);
-        setProbe(p); setProbeUrl(url); setQ({ ...p, via: "relay", atRun });
-      }
-      if (!p.requiresPayment) {
-        return { ok: true, paid: false, via: "relay", status: p.status, body: safeBody(p.body),
-          note: "That endpoint is free — it answered without asking for payment." };
-      }
-
-      setBusy("signing");
-      const signer = await makeRelaySigner(session.agentWallet);
-      const { payment, paymentHeaders } = await signer.signProbe(p);
-
-      setBusy("settling");
-      const r = await relayExecute({ url, agent: signer.address, payment, paymentHeaders });
-      return { ...r, via: "relay" };
-    }
-
-    // --- direct from the browser: sign AND fetch here --------------------
-    setBusy("signing");
-    const payerClient = await makeBrowserPayer(session.agentWallet);
     setBusy("settling");
-    const res = await payerClient.fetchWithPay(url, {
-      headers: { Accept: "application/json", "User-Agent": "agentfloat-browser/1.0" },
-    });
-    const bodyText = await res.text();
-    const pr = res.headers.get("payment-response") || res.headers.get("PAYMENT-RESPONSE");
-    let settlement = null;
-    try { settlement = pr ? JSON.parse(atob(pr)) : null; } catch { settlement = null; }
-    const settlementTx = settlement?.transaction || null;
-
-    // Do NOT trust the HTTP status to say whether MUSD moved — it has been
-    // observed to disagree with the chain in both directions.
-    let recorded = null;
-    if (settlementTx) {
-      recorded = await recordSettlement({ agent: payerClient.address, settlementTx, endpoint: url });
-    }
-
+    const targetUrl = resolveUrl(url, health); // ← PASS health HERE
+    const r = await pay(targetUrl);
+    if (r.unreachable) throw new Error("gateway unreachable — is it running?");
     return {
-      via: "browser",
-      ok: res.status < 400,
-      paid: Boolean(settlementTx),
-      settled: Boolean(settlementTx),
-      delivered: res.status < 400,
-      status: res.status,
-      body: safeBody(bodyText),
-      receipt: {
-        agent: payerClient.address,
-        amountMusd: settlement?.amount ? fmtMusd(settlement.amount, 4) : null,
-        settlementTx,
-        source: recorded?.recorded ? "chain" : "browser",
-        txHash: recorded?.txHash || null,
-        verified: recorded?.verified ?? null,
-        confirmed: recorded?.confirmed ?? null,
-      },
-      recordNote: recorded?.note || recorded?.error || null,
+      ...r,
+      via: effectivePayer === "gateway" ? "gateway" : "relay",
     };
-  }, [effectivePayer, path, url, probe, probeUrl, session.agentAddress, session.agentWallet]);
-  // purchase() is called with no arguments by the Pay button and with the current
-  // run count by the loop; the stamp only matters when a probe is re-taken mid-run.
+  }, [effectivePayer, url, health]);
 
-  // A payment moves the caps AND consumes an exact-amount approval, so all three
-  // reads are refreshed together. A gauge that lags the run it is describing looks
-  // broken in a demo and is misleading in production.
+
   const syncAfterRun = useCallback(() => {
     refresh();
     budget.refresh?.();
@@ -293,30 +231,20 @@ export default function Spend() {
     }
   }
 
-  // --- derived: the quote, the budget it is judged against, the loop decision --
+  // --- derived state ---------------------------------------------------------
   const offer = q?.offer || null;
   const policy = q?.policy || null;
   const blocked = busy !== null || !health || health.unreachable;
 
-  // Covers both "never approved" and "approved for less than this quote" — the
-  // second happens once an exact-amount approval has been consumed by a payment.
   const approvalNeeded = effectivePayer === "own" && allowance !== null &&
     (offer?.amount ? allowance < BigInt(offer.amount) : allowance === 0n);
 
   const quoteWei = offer?.amount ?? null;
-  // Raw input goes into state so typing is not fought by clamping; the normalized
-  // copy is what the loop and the projection actually use.
   const sched = normalizeSchedule(schedule);
   const decision = shouldContinue({ runs, schedule: sched });
   const summary = summarize(runs);
-  // Where the purchase has got to, derived from the same state the page acts on.
   const flow = flowStep({ busy, quote: q, policy, result });
 
-  // Today's spend comes from the GATEWAY, which sums the treasury's on-chain
-  // payment receipts — not from the contract's remainingToday, which is how much
-  // more FLOAT the treasury may release today and has nothing to do with spending.
-  // The figure was read when this quote was taken, so runs since then are added
-  // from the log: live mid-loop, and never double-counted.
   const policyBudget = policy?.budget || null;
   const sessionMoved = useMemo(
     () => summarize(runs.slice(q?.atRun ?? 0)).movedWei,
@@ -337,7 +265,7 @@ export default function Spend() {
     try {
       const r = await purchase({ atRun: runs.length });
       run = makeRun({ index, quoteWei, result: r });
-      setResult(r);   // the newest run is also the newest single result
+      setResult(r);
       setErr(null);
     } catch (e) {
       run = makeRun({ index, quoteWei, error: e });
@@ -349,15 +277,6 @@ export default function Spend() {
     syncAfterRun();
   }, [runs.length, purchase, quoteWei, syncAfterRun, via, url]);
 
-  /**
-   * Arm the next run.
-   *
-   * The delay is 0 for the first run so pressing Start does something at once,
-   * and the schedule's interval after that. The effect re-arms when the log grows
-   * — the only event that can change shouldContinue()'s answer — so the timer is
-   * never torn down by a per-second tick, which is the classic way an interval
-   * like this silently never fires.
-   */
   useEffect(() => {
     if (!autoRunning) return undefined;
     if (!decision.run) { setAutoRunning(false); return undefined; }
@@ -399,6 +318,81 @@ export default function Spend() {
 
       <FlowStepper flow={flow} />
 
+      {/* ── Permit2 payment status banner ──────────────────────────── */}
+      {session.agentAddress && (
+        <div
+          className={`flex flex-wrap items-center justify-between gap-4 rounded-xl border px-5 py-4 ${
+            allowance === null
+              ? "border-line-soft bg-ink-dim/50"
+              : paymentsEnabled
+                ? "border-ok/25 bg-ok/6"
+                : "border-warn/40 bg-warn/8"
+          }`}
+        >
+          <div className="flex items-start gap-3">
+            <span
+              className={`grid h-9 w-9 shrink-0 place-items-center rounded-full border ${
+                allowance === null
+                  ? "border-line-soft bg-ink-dim text-dim"
+                  : paymentsEnabled
+                    ? "border-ok/30 bg-ok/10 text-ok"
+                    : "border-warn/30 bg-warn/10 text-warn"
+              }`}
+            >
+              {allowance === null ? (
+                <RefreshCw size={16} className="animate-spin" />
+              ) : paymentsEnabled ? (
+                <ShieldCheck size={16} />
+              ) : (
+                <Lock size={16} />
+              )}
+            </span>
+            <div>
+              <div className="text-[14.5px] font-semibold text-text">
+                {allowance === null
+                  ? "Checking payment status…"
+                  : paymentsEnabled
+                    ? "Payments enabled"
+                    : "Payments not enabled"}
+              </div>
+              <p className="mt-0.5 text-[13px] text-dim">
+                {allowance === null
+                  ? `Reading Permit2 allowance for agent ${short(session.agentAddress, 4)}…`
+                  : paymentsEnabled
+                    ? `Permit2 approved — agent ${short(session.agentAddress, 4)} can sign x402 payments on your behalf.`
+                    : `Your agent EOA needs a one-time MUSD → Permit2 approval before it can sign x402 payments. This is a server-side transaction — no browser signature required.`}
+              </p>
+              {approveError && (
+                <p className="mt-1.5 flex items-center gap-1.5 text-[13px] text-bad">
+                  <CircleAlert size={13} />
+                  {approveError}
+                </p>
+              )}
+            </div>
+          </div>
+          <div className="flex shrink-0 items-center gap-2.5">
+            {allowance !== null && paymentsEnabled && (
+              <button
+                onClick={refreshAllowance}
+                className="rounded-lg border border-line-soft px-3 py-1.5 text-[12.5px] font-medium text-dim transition-colors hover:bg-panel-2 hover:text-muted"
+              >
+                Re-check
+              </button>
+            )}
+            {allowance !== null && !paymentsEnabled && (
+              <button
+                onClick={onEnablePayments}
+                disabled={approving}
+                className="shrink-0 rounded-lg bg-btc px-4 py-2 text-[13.5px] font-semibold text-ink transition-opacity hover:opacity-90 disabled:opacity-50"
+              >
+                {approving ? "Approving…" : "Enable payments"}
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+      {/* ──────────────────────────────────────────────────────────── */}
+
       <div className="grid items-start gap-6 lg:grid-cols-[1.5fr_1fr]">
         {/* ---------------- left: the purchase ---------------- */}
         <Card
@@ -419,10 +413,10 @@ export default function Spend() {
                 label: "Your agent wallet",
                 icon: Wallet,
                 hint: session.agentAddress
-                  ? `${short(session.agentAddress, 4)} — you sign in this browser`
+                  ? `${short(session.agentAddress, 4)} — server-side EOA`
                   : "Sign in to use your own wallet",
                 disabled: !canUseOwn,
-                title: canUseOwn ? "Your own agent wallet signs — the key never leaves Privy" : "Sign in to use your own wallet",
+                title: canUseOwn ? "Your own agent wallet signs — the key is encrypted on the server" : "Sign in to use your own wallet",
               },
               {
                 value: "gateway",
@@ -467,7 +461,7 @@ export default function Spend() {
               />
               <Note className="mt-3">
                 {path === "relay"
-                  ? <>Signing happens in this browser; only the HTTP request is relayed, so a seller with no{" "}
+                  ? <>Signing happens server-side; only the HTTP request is relayed, so a seller with no{" "}
                       <span className="code">Access-Control-Allow-Origin</span> still works. The gateway sees one opaque
                       header it cannot forge, and decodes it to check the payer and the amount before it forwards anything.</>
                   : <>The browser calls the seller itself. Sellers that send no CORS header — Mezo's hosted demo
@@ -477,14 +471,14 @@ export default function Spend() {
             </div>
           )}
 
-          {approvalNeeded && (
-            <Note tone="warn" className="mt-6" icon={CircleAlert} title="Payments will be refused until this wallet approves Permit2">
-              x402 settles by letting Permit2 move MUSD out of the wallet, which takes one approval transaction signed by
-              you{offer?.amount ? ` for at least ${fmtMusd(offer.amount, 4)} MUSD` : ""}. It is not a setting AgentFloat can
-              flip for you — and it should not be.
+          {/* inline approval note (quote-specific, complements the banner above) */}
+          {approvalNeeded && !paymentsEnabled && (
+            <Note tone="warn" className="mt-6" icon={CircleAlert} title="Payments will be refused until Permit2 is approved">
+              x402 settles by letting Permit2 move MUSD out of the agent wallet, which takes one server-side approval
+              transaction{offer?.amount ? ` for at least ${fmtMusd(offer.amount, 4)} MUSD` : ""}.
               <div className="mt-3.5">
-                <Button size="sm" variant="primary" icon={ShieldCheck} onClick={() => setApprovalOpen(true)}>
-                  Enable payments
+                <Button size="sm" variant="primary" icon={ShieldCheck} onClick={onEnablePayments} busy={approving} disabled={approving}>
+                  {approving ? "Approving…" : "Enable payments"}
                 </Button>
               </div>
             </Note>
@@ -516,10 +510,11 @@ export default function Spend() {
                     <Button
                       variant="primary"
                       onClick={onPay}
-                      disabled={blocked}
+                      disabled={blocked || (session.agentAddress && allowance !== null && !paymentsEnabled)}
                       busy={busy === "signing" || busy === "settling"}
                       icon={busy ? undefined : Play}
                       className="shrink-0"
+                      title={session.agentAddress && allowance !== null && !paymentsEnabled ? "Enable payments first" : undefined}
                     >
                       {busy === "signing" ? "sign in wallet…" : busy === "settling" ? "settling…" : "Pay once"}
                     </Button>
@@ -527,7 +522,7 @@ export default function Spend() {
                     <Button
                       variant="primary"
                       onClick={autoRunning ? stopAuto : startAuto}
-                      disabled={blocked || (!autoRunning && !offer)}
+                      disabled={blocked || (!autoRunning && !offer) || (session.agentAddress && allowance !== null && !paymentsEnabled)}
                       busy={busy !== null && autoRunning}
                       icon={autoRunning ? Square : Repeat}
                       className="shrink-0"
@@ -548,11 +543,18 @@ export default function Spend() {
                   type="button"
                   onClick={() => { setUrl(p.url); reset(); }}
                   title={p.cors ? "sends CORS headers — reachable from the browser too" : "no CORS headers — needs the relay or the gateway"}
-                  className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-line-soft bg-ink-dim px-3 py-1.5 text-left transition-colors hover:border-faint hover:bg-panel-2"
+                  className={`inline-flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-1.5 text-left transition-colors hover:border-faint hover:bg-panel-2 ${
+                    p.recommended
+                      ? "border-btc/30 bg-btc/5"
+                      : "border-line-soft bg-ink-dim"
+                  }`}
                 >
-                  <Icon as={p.cors ? Zap : Send} size={13} className="text-btc" />
+                  <Icon as={p.recommended ? ShieldCheck : p.cors ? Zap : Send} size={13} className={p.recommended ? "text-ok" : "text-btc"} />
                   <span>
-                    <span className="block text-[13px] leading-tight font-medium text-text">{p.label}</span>
+                    <span className="block text-[13px] leading-tight font-medium text-text">
+                      {p.label}
+                      {p.recommended && <span className="ml-1.5 text-[11px] font-semibold text-ok">recommended</span>}
+                    </span>
                     <span className="block font-mono text-[11.5px] leading-tight text-dim">{p.detail}</span>
                   </span>
                 </button>
@@ -634,12 +636,12 @@ export default function Spend() {
               onReset={resetAuto}
               onUseDemoAgent={useDemoAgent}
               result={result}
-              onEnable={() => setApprovalOpen(true)}
+              onEnable={onEnablePayments}
             />
           )}
 
           {buyMode === "once" && result && (
-            <ResultView result={result} onEnable={() => setApprovalOpen(true)} />
+            <ResultView result={result} onEnable={onEnablePayments} />
           )}
         </Card>
 
@@ -659,10 +661,10 @@ export default function Spend() {
             >
               {mine.registered === false ? (
                 <Note tone="warn" icon={CircleAlert} title="No float to spend yet">
-                  Your wallet exists but is not registered in the treasury, so there is nothing to spend. The faucet fixes
-                  both in one step: it registers the wallet with on-chain caps and airdrops 10 MUSD.
+                  Your wallet exists but is not registered in the treasury, so there is nothing to spend. Fund your agent
+                  from the Earn page first.
                   <div className="mt-3.5">
-                    <Link to="/faucet"><Button size="sm" variant="primary" icon={Coins}>Claim 10 MUSD</Button></Link>
+                    <Link to="/earn"><Button size="sm" variant="primary" icon={Coins}>Earn · Borrow MUSD</Button></Link>
                   </div>
                 </Note>
               ) : mine.status ? (
@@ -670,9 +672,6 @@ export default function Spend() {
                   <Grid cols={3} className="gap-5">
                     <Stat icon={Coins} label="Float" value={fmtMusd(mine.status.walletBalance, 4)} unit="MUSD" />
                     <Stat icon={Gauge} label="Per-call max" value={fmtMusd(mine.status.perCallMax, 2)} unit="MUSD" />
-                    {/* Spend is known only once the gateway has judged a quote, so
-                        show it when it exists — and never show the contract's
-                        funding counter under a spending label. */}
                     {effectivePayer === "own" && projection.spendKnown ? (
                       <Stat icon={TrendingUp} label="Left to spend today"
                             value={fmtMusd(projection.leftToday, 4)} unit="MUSD"
@@ -763,7 +762,7 @@ export default function Spend() {
         amountWei={offer?.amount || null}
         onApproved={({ hash }) => {
           setApprovedTx(hash);
-          setResult(null);   // the refusal this produced is no longer true
+          setResult(null);
           setErr(null);
           refreshAllowance();
         }}
@@ -792,15 +791,6 @@ const STEP_ICON_STATE = {
   skipped: Minus,
 };
 
-/**
- * The flow, as a picture of where the money got to.
- *
- * `flow` comes from flowStep() in lib/autopay.js — pure and offline-tested, because
- * the mapping from a refusal code to a step is a claim about the protocol, not
- * decoration. `permit2_not_approved` landing on the SIGNATURE step rather than the
- * policy step is the difference between a user fixing their allowance and a user
- * lowering a cap that was never the problem.
- */
 function FlowStepper({ flow }) {
   const { steps, at, verdict } = flow;
   return (
@@ -813,8 +803,6 @@ function FlowStepper({ flow }) {
         <VerdictBadge verdict={verdict} codes={flow.codes} />
       </div>
 
-      {/* Desktop: one row of five with connectors. Mobile: a vertical list — five
-          columns at 360px would be unreadable, and the order is the information. */}
       <ol className="hidden items-stretch gap-0 px-5 py-5 md:flex">
         {steps.map((s, i) => {
           const tone = STEP_TONE[s.state];
@@ -851,7 +839,6 @@ function FlowStepper({ flow }) {
                   </span>
                 </span>
               </div>
-              {/* the connector: filled once the step before it is behind us */}
               {i < steps.length - 1 && (
                 <span
                   aria-hidden="true"
@@ -896,7 +883,6 @@ function FlowStepper({ flow }) {
   );
 }
 
-/** One badge for where the purchase stands — the stepper's headline. */
 function VerdictBadge({ verdict, codes = [] }) {
   const map = {
     idle: { tone: "neutral", icon: CircleHelp, text: "nothing purchased yet" },
@@ -918,11 +904,6 @@ function VerdictBadge({ verdict, codes = [] }) {
       {m.text}
     </Badge>
   );
-}
-
-function safeBody(text) {
-  if (typeof text !== "string") return text;
-  try { return JSON.parse(text); } catch { return text; }
 }
 
 // ---------------------------------------------------------------------------
@@ -947,8 +928,6 @@ function QuoteView({ q, offer, policy }) {
       <div className="p-4">
         {offer ? (
           <>
-            {/* The price is the one number on this panel, so it gets the largest
-                type on the page after the balance. Everything else is detail. */}
             <div className="flex flex-wrap items-end justify-between gap-4">
               <div>
                 <div className="stat-label">quoted price</div>
@@ -964,7 +943,7 @@ function QuoteView({ q, offer, policy }) {
 
             {q.description && (
               <p className="mt-3.5 rounded-lg border border-line-soft bg-panel-2/50 px-3.5 py-2.5 text-[14px] leading-relaxed text-muted italic">
-                “{q.description}”
+                "{q.description}"
               </p>
             )}
 
@@ -976,7 +955,7 @@ function QuoteView({ q, offer, policy }) {
               <dt>transfer</dt>
               <dd className="text-right">
                 {offer.transferMethod || offer.scheme}
-                {offer.eip712Name && <> · EIP-712 “{offer.eip712Name}”</>}
+                {offer.eip712Name && <> · EIP-712 "{offer.eip712Name}"</>}
               </dd>
               {offer.maxTimeoutSeconds != null && (
                 <><dt>timeout</dt><dd className="tnum text-right">{offer.maxTimeoutSeconds}s</dd></>
@@ -1047,7 +1026,8 @@ function ResultView({ result, onEnable = null }) {
   const kind = result.blockedByPolicy ? "refused"
     : result.warning === "charged_without_delivery" ? "charged"
     : result.settled === false ? "failed"
-    : result.paid === false ? "free"
+    : result.paid === false && result.status === 200 ? "free"
+    : result.paid === false ? "failed"
     : result.ok ? "paid" : "failed";
   const v = RESULT_VIEW[kind];
 
@@ -1091,8 +1071,7 @@ function ResultView({ result, onEnable = null }) {
             {result.reasons?.some((x) => x.code === "permit2_not_approved") && onEnable && (
               <div className="mt-4 rounded-lg border border-warn/40 bg-warn-dim p-3.5">
                 <p className="text-[14px] leading-relaxed text-text">
-                  This is a one-time approval from your own wallet — not a script, and not a setting somebody else has to
-                  change for you. You choose whether to approve this payment only or all future ones.
+                  This is a one-time server-side approval from your agent EOA — no browser signature needed.
                 </p>
                 <div className="mt-3">
                   <Button size="sm" variant="primary" icon={ShieldCheck} onClick={onEnable}>Enable payments</Button>
@@ -1175,13 +1154,7 @@ function ResultView({ result, onEnable = null }) {
 }
 
 // ---------------------------------------------------------------------------
-// The automation panel: schedule, budget projection, run log, and the verdict.
-//
-// The order on screen is the order the argument is made. First what will happen
-// (the projection, computed from the same on-chain numbers the gateway enforces),
-// then what did happen (the log, one row per purchase, with the MUSD that actually
-// moved), then why it stopped. A judge should be able to read the refusal before
-// it happens and see it confirmed after.
+// The automation panel
 // ---------------------------------------------------------------------------
 
 const OUTCOME_TONE = {
@@ -1209,7 +1182,6 @@ function AutoPanel({
 
   return (
     <div className="mt-6 overflow-hidden rounded-xl border border-btc/25 bg-ink-dim">
-      {/* header: what state the loop is in, at a glance */}
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line-soft bg-btc/5 px-4 py-3">
         <span className="flex items-center gap-2.5 text-[14px] font-semibold text-text">
           <Icon as={Repeat} size={16} className="text-btc" />
@@ -1229,7 +1201,6 @@ function AutoPanel({
       </div>
 
       <div className="p-4">
-        {/* --- the schedule --- */}
         <div className="grid gap-4 sm:grid-cols-[9rem_9rem_1fr_auto] sm:items-end">
           <Field label="Every (seconds)" hint="2–600">
             <input
@@ -1265,7 +1236,6 @@ function AutoPanel({
           </div>
         </div>
 
-        {/* --- what the budget will allow, before anything is signed --- */}
         {projection.available ? (
           <div className="mt-5 rounded-xl border border-line-soft bg-panel-2 p-4">
             <div className="mb-2.5 flex flex-wrap items-center justify-between gap-2">
@@ -1313,14 +1283,13 @@ function AutoPanel({
             {!projection.spendKnown ? (
               <Note className="mt-4" icon={CircleHelp}>
                 Today's spend has not been read yet. It comes from the gateway's policy check — which sums the treasury's
-                on-chain payment receipts — so <b>quote the endpoint</b> and the projection fills in. The caps above are
-                read straight from the contract either way.
+                on-chain payment receipts — so <b>quote the endpoint</b> and the projection fills in.
               </Note>
             ) : projection.nextRefusal ? (
               <Note tone="bad" className="mt-4" icon={Ban} title={`Run #${projection.nextRefusal.onRun} will be refused`}>
                 <span className="code">{projection.nextRefusal.code}</span>{" "}
                 ({REASON_LABEL[projection.nextRefusal.code] || projection.nextRefusal.code}). The gateway checks the quote
-                against these caps before anything is signed, so no MUSD moves — and the refusal itself is written on chain.
+                against these caps before anything is signed, so no MUSD moves.
               </Note>
             ) : projection.capHitsOnRun && projection.quoteWei > 0n ? (
               <Note className="mt-4" icon={Timer}>
@@ -1328,37 +1297,31 @@ function AutoPanel({
                 and <b>run #{projection.capHitsOnRun} is refused</b> by{" "}
                 <span className="code">{projection.binding}</span>
                 {REASON_LABEL[projection.binding] ? ` (${REASON_LABEL[projection.binding]})` : ""}.
-                {!payerIsOwn && <> Lower the daily cap on <Link to="/operate" className="text-info hover:underline">Operate</Link> to
-                watch it happen inside a minute.</>}
               </Note>
             ) : null}
 
             <p className="mt-3.5 border-t border-line-soft pt-3 text-[13px] leading-relaxed text-dim">
               The contract also keeps a funding counter — {fmtMusd(projection.fundingHeadroomToday, 4)} MUSD of float the
-              treasury may still release to this wallet today. That is a different budget from the one above: payments are
-              bounded by what has been <b className="text-muted">spent</b>, not by what was released.
+              treasury may still release to this wallet today. That is a different budget from the one above.
             </p>
           </div>
         ) : (
           <Note tone="warn" className="mt-5" icon={CircleAlert} title="No on-chain budget to project against">
-            This wallet is not registered, so runs would be refused for <span className="code">not_registered</span>{" "}
-            rather than for a cap. Claim float from the faucet first.
+            This wallet is not registered, so runs would be refused for <span className="code">not_registered</span>.
+            Fund your agent from the Earn page first.
           </Note>
         )}
 
-        {/* --- the honest caveat about signing every run --- */}
         {payerIsOwn && (
-          <Note className="mt-4" icon={PenLine} title="Your wallet signs every run">
-            Expect a prompt each time. That is not friction to design away: an agent that can move funds repeatedly
-            without the key holder is the thing this product refuses to be. For an unattended demonstration, switch to the
-            gateway's demo agent — it signs server-side and the same on-chain caps apply to it.
+          <Note className="mt-4" icon={PenLine} title="Your agent signs every run server-side">
+            The agent EOA signs each payment on the server — no browser prompts. For an unattended demonstration, switch
+            to the gateway's demo agent.
             <div className="mt-3">
               <Button size="sm" icon={Zap} onClick={onUseDemoAgent}>Use the demo agent for this loop</Button>
             </div>
           </Note>
         )}
 
-        {/* --- what actually happened --- */}
         {runs.length === 0 ? (
           <div className="mt-5 rounded-xl border border-dashed border-line bg-panel-2/30 px-4 py-8 text-center">
             <span className="mx-auto grid h-11 w-11 place-items-center rounded-full border border-line bg-ink-dim text-dim">
@@ -1371,7 +1334,6 @@ function AutoPanel({
           </div>
         ) : (
           <div className="mt-5">
-            {/* totals first: this is the number a judge wants before the rows */}
             <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-line-soft bg-panel-2 px-4 py-3">
               <span className="flex items-center gap-2 text-[12.5px] font-semibold tracking-[0.04em] text-dim uppercase">
                 <Icon as={ReceiptText} size={14} /> run log
@@ -1438,7 +1400,6 @@ function AutoPanel({
           </div>
         )}
 
-        {/* --- why it stopped, and what to do about it --- */}
         {halted && (
           <Note
             tone={decision.reason === "halted_by_policy" ? "warn" : "bad"}
@@ -1466,7 +1427,6 @@ function AutoPanel({
           </Note>
         )}
 
-        {/* --- the newest run in full, including what was bought --- */}
         {result && (
           <div className="mt-5 border-t border-line-soft pt-2">
             <div className="mt-3 mb-1 flex items-center gap-2 text-[11.5px] font-semibold tracking-[0.06em] text-dim uppercase">
@@ -1481,20 +1441,7 @@ function AutoPanel({
 }
 
 // ---------------------------------------------------------------------------
-// The demonstration recipe.
-//
-// A judge has about three minutes and no idea what the caps are set to. This card
-// is the answer to "how do I see the budget actually stop something?": the exact
-// numbers to set, the exact quote to take, and the exact run that will be refused.
-//
-// The numbers are not invented for the copy — they are the same scenario pinned in
-// scripts/test-autopay.mjs (0.002 per call, 0.005 daily, 0.001 a run → five
-// settle, the sixth is refused), so what the page promises is what the tests assert
-// and what the live end-to-end run in server/e2e-autopay.mjs proves on chain.
-//
-// It updates as the user goes: once a quote exists the card says which run WILL be
-// refused with the real numbers rather than the recipe's, so it is never stale
-// advice sitting next to a live projection.
+// The demonstration recipe
 // ---------------------------------------------------------------------------
 
 function DemoRecipe({ projection, quoteWei, payerIsOwn }) {
@@ -1545,7 +1492,7 @@ function DemoRecipe({ projection, quoteWei, payerIsOwn }) {
             },
             {
               n: 3,
-              title: "Choose “Run automatically”, then Start",
+              title: "Choose \"Run automatically\", then Start",
               body: <>Five runs settle and move exactly <b className="tnum text-text">0.005</b> MUSD. The panel predicts the refusal before it happens.</>,
               to: null,
               cta: null,
@@ -1580,7 +1527,7 @@ function DemoRecipe({ projection, quoteWei, payerIsOwn }) {
 
       <div className="mt-4 border-t border-line-soft pt-3.5 text-[13px] leading-relaxed text-dim">
         {payerIsOwn
-          ? <>With your own wallet every run needs a signature, so use the demo agent for an unattended loop — the caps that bind it are on chain in exactly the same way.</>
+          ? <>With your own wallet the agent EOA signs server-side, so loops run unattended. The caps that bind it are on chain and enforced by the same policy check as the demo agent.</>
           : <>The demo agent signs server-side, so the loop runs unattended. Its caps are on chain and enforced by the same policy check as yours.</>}
       </div>
     </Card>
@@ -1609,3 +1556,5 @@ function explainFetchError(e, { via, url }) {
   }
   return msg;
 }
+
+

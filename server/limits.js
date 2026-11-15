@@ -42,6 +42,8 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { Router } from "express";
 import { ethers } from "ethers";
+import { requireSession } from "./lib/session-auth.js";   // ← ADD
+
 
 const TREASURY_ABI = [
   "function isRegistered(address) view returns (bool)",
@@ -71,14 +73,14 @@ export function ceilingsFrom(env = process.env) {
 }
 
 /** The exact string a wallet signs. Server-authored, client-signs-verbatim. */
-export function buildMessage({ address, action, nonce, perCallMaxMusd, dailyCapMusd, ceilings }) {
+export function buildMessage({ address, primaryAddress, action, nonce, perCallMaxMusd, dailyCapMusd, ceilings }) {
   const head =
     action === "freeze"
       ? "AgentFloat: freeze my agent wallet (disable it on-chain)"
       : action === "unfreeze"
         ? "AgentFloat: unfreeze my agent wallet (re-enable it on-chain)"
         : "AgentFloat: change my agent wallet's spending limits";
-  const lines = [head, `agent: ${address}`];
+  const lines = [head, `wallet: ${primaryAddress}`, `agent: ${address}`];
   if (action === "limits") {
     lines.push(`per-call max: ${perCallMaxMusd} MUSD`);
     lines.push(`daily cap: ${dailyCapMusd} MUSD`);
@@ -164,10 +166,20 @@ export function createLimitsRouter({ getStateFile, getSigner, getChain, getDeplo
   });
 
   // --- challenge: bind the requested values to a single-use nonce ------------
-  router.get("/challenge", async (req, res) => {
-    const action = ["limits", "freeze", "unfreeze"].includes(req.query.action) ? req.query.action : "limits";
-    try {
-      const address = ethers.getAddress(String(req.query.address || ""));
+    router.get("/challenge", requireSession, async (req, res) => {
+      const action = ["limits", "freeze", "unfreeze"].includes(req.query.action) ? req.query.action : "limits";
+      try {
+        const address = ethers.getAddress(String(req.query.address || ""));
+        const primaryAddress = req.session.primaryAddress;
+
+        // The agent address must match the session — a user can only change their own agent's budget.
+        if (address.toLowerCase() !== req.session.agentAddress.toLowerCase()) {
+          return res.status(403).json({
+            ok: false,
+            error: `address ${address} does not match your session agent ${req.session.agentAddress}`,
+          });
+        }
+
       const t = treasuryWithSigner();
       if (!t) {
         return res.status(503).json({
@@ -219,9 +231,9 @@ export function createLimitsRouter({ getStateFile, getSigner, getChain, getDeplo
       }
 
       const nonce = crypto.randomUUID();
-      const message = buildMessage({ address, action, nonce, perCallMaxMusd, dailyCapMusd, ceilings: cfg });
+      const message = buildMessage({ address, primaryAddress, action, nonce, perCallMaxMusd, dailyCapMusd, ceilings: cfg });
       const s = prune(loadState());
-      s.nonces[nonce] = { address, action, perCallMaxMusd, dailyCapMusd, message, createdAt: Date.now() };
+      s.nonces[nonce] = { address, primaryAddress, action, perCallMaxMusd, dailyCapMusd, message, createdAt: Date.now() };
       saveState(s);
 
       res.json({
@@ -241,7 +253,7 @@ export function createLimitsRouter({ getStateFile, getSigner, getChain, getDeplo
   });
 
   // --- apply: verify the signature, then write with the owner key ------------
-  router.post("/apply", async (req, res) => {
+  router.post("/apply", requireSession, async (req, res) => {
     const { nonce, signature } = req.body || {};
     try {
       if (!nonce || !signature) return res.status(400).json({ ok: false, error: "nonce and signature are required" });
@@ -258,15 +270,18 @@ export function createLimitsRouter({ getStateFile, getSigner, getChain, getDeplo
         });
       }
 
-      // THE ONLY TRUST DECISION: does this signature come from the agent wallet?
+      // THE ONLY TRUST DECISION: does this signature come from the primary wallet
+      // that owns this agent? In Wave 2 the user signs with their connected wallet
+      // (primaryAddress), not with the server-side agent EOA they don't have the key for.
+      const expectedSigner = record.primaryAddress || record.address;
       const signer = ethers.verifyMessage(record.message, signature);
-      if (signer.toLowerCase() !== record.address.toLowerCase()) {
+      if (signer.toLowerCase() !== expectedSigner.toLowerCase()) {
         delete s.nonces[nonce]; // burned: a mismatched signature is not retried
         saveState(s);
         return res.status(403).json({
           ok: false,
-          error: `signature is from ${signer}, not from ${record.address}`,
-          hint: "Sign with the agent wallet this change is for.",
+          error: `signature is from ${signer}, not from ${expectedSigner}`,
+          hint: "Sign with the wallet you signed in with.",
         });
       }
       delete s.nonces[nonce]; // consumed before the tx, so a retry cannot double-apply

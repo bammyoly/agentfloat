@@ -48,6 +48,9 @@ export function InertSessionProvider({ children }) {
       isOperator: false,
       operatorSigner: null,
       externalWallets: [],
+      // In InertSessionProvider's value, ADD these fields:
+      primaryAddress: null,
+      primaryWallet: null,
       login: async () => {},
       logout: async () => {},
       // Shape parity with PrivyLayer: pages and the navbar read these without

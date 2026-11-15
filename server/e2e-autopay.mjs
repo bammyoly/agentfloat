@@ -1,4 +1,5 @@
 // ---------------------------------------------------------------------------
+// server/e2e-autopay.mjs
 // LIVE end-to-end test of AUTOMATED SPENDING: the loop on the Spend page, run
 // against the real chain and a real seller.
 //

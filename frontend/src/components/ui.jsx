@@ -479,6 +479,25 @@ export function Spinner({ size = 14, tone = "text-info" }) {
   );
 }
 
+/** Skeleton bar used while chain reads are in flight.
+ *  Never show a real zero for a still-loading balance. */
+export function Shimmer({ width = "5rem", height = "1.5rem", className = "" }) {
+  return (
+    <span
+      className={`inline-block rounded ${className}`}
+      style={{
+        width,
+        height,
+        background:
+          "linear-gradient(90deg, var(--color-faint) 25%, var(--color-surface, #1a1a24) 50%, var(--color-faint) 75%)",
+        backgroundSize: "200% 100%",
+        animation: "shimmer 1.4s ease-in-out infinite",
+      }}
+      aria-hidden="true"
+    />
+  );
+}
+
 /** Nothing here yet. `icon` defaults to an empty tray; `action` is a slot for
  *  the one thing that would change it, because an empty state that does not say
  *  how to fill itself is a dead end. */

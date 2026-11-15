@@ -27,6 +27,7 @@
 // way to make the pause button work — a build-time variable is in the bundle, and
 // a published admin token is not a lock.
 // ---------------------------------------------------------------------------
+import * as tokenStore from "./session-token.js";
 
 const RAW_BASE = (import.meta.env.VITE_GATEWAY_URL || "").trim();
 /** Absolute gateway origin with no trailing slash, or "" for same-origin. */
@@ -46,9 +47,22 @@ const api = (path) => `${GATEWAY_BASE}${path}`;
  */
 const ADMIN_HEADER = (import.meta.env.VITE_GATEWAY_ADMIN_TOKEN || "").trim();
 
+let _getToken = () => null;
+export function setSessionTokenGetter(fn) {
+  if (typeof fn === "function") _getToken = fn;
+}
+
 function baseHeaders() {
   const h = { "Content-Type": "application/json" };
   if (ADMIN_HEADER) h["X-AgentFloat-Admin"] = ADMIN_HEADER;
+  // Wave 2: attach the session token so requireSession middleware can identify
+  // the caller. Read lazily on every request — the token changes on login/logout.
+  const getter = tokenStore.getSessionToken || tokenStore.getToken;
+  const token = typeof getter === "function" ? getter() : null;
+  if (token) {
+    h["X-Session-Token"] = token;
+    h["Authorization"] = `Bearer ${token}`;
+  }
   return h;
 }
 
@@ -251,3 +265,29 @@ export const telegramTest = ({ nonce, signature }) =>
 
 export const telegramStatus = (address) =>
   req(`/api/telegram/status?address=${encodeURIComponent(address)}`);
+
+
+// --- sMUSD savings (Wave 2 yield + protocol fees) ---------------------------
+export const savingsStatus = (agent) =>
+  req(`/api/savings/status${agent ? `?agent=${encodeURIComponent(agent)}` : ""}`);
+
+export const savingsSweep = ({ agent, amount } = {}) =>
+  req("/api/savings/sweep", {
+    method: "POST",
+    body: {
+      ...(agent ? { agent } : {}),
+      ...(amount != null && amount !== "" ? { amount: String(amount) } : {}),
+    },
+  });
+
+export const savingsWithdraw = ({ agent, amount } = {}) =>
+  req("/api/savings/withdraw", {
+    method: "POST",
+    body: {
+      ...(agent ? { agent } : {}),
+      ...(amount != null && amount !== "" ? { amount: String(amount) } : {}),
+    },
+  });
+
+export const savingsCollectFees = () =>
+  req("/api/savings/collect-fees", { method: "POST" });

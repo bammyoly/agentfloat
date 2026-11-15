@@ -1,11 +1,11 @@
 // ---------------------------------------------------------------------------
 // Telegram alerts — the user's own agent, reported to their own phone.
 //
-// WHY THIS IS IN WAVE 1
+// WHY THIS IS IN WAVE 2
 //   A budget cap you have to stare at a dashboard to notice is half a control.
 //   The point of AgentFloat is that an agent spends inside limits while nobody is
-//   watching, so the moment it spends, is refused, or crosses a threshold, the
-//   person who owns the wallet should hear about it where they already are.
+//   watching, so the moment it spends, is refused, deposits into Earn, or crosses
+//   a threshold, the person who owns the wallet should hear about it where they already are.
 //
 // HOW A USER CONNECTS (no phone number, no OAuth, no secret)
 //   1. the app asks the gateway for a subscribe code bound to THEIR agent
@@ -16,22 +16,22 @@
 //      confirms. Done.
 //
 // WHY LONG POLLING AND NOT A WEBHOOK
-//   Webhooks need a public HTTPS URL. This gateway runs on a laptop at
-//   127.0.0.1:4022 during a buildathon. getUpdates long polling is outbound-only,
+//   Webhooks need a public HTTPS URL. This gateway runs on a laptop or container
+//   during local dev / staging. getUpdates long polling is outbound-only,
 //   so it works behind NAT with no tunnel — and exactly one process may poll, so a
 //   409 is reported as "another gateway is polling", not swallowed.
 //
 // WHAT GETS SENT
 //   Two sources, both chain-derived:
 //     • inline events — the gateway saw it happen (a relayed payment, a refusal,
-//       a budget change, a faucet claim), so it reports immediately;
+//       a budget change, vault deposits/withdrawals, wallet funding), so it reports immediately;
 //     • the watcher — a poll per subscribed agent that diffs on-chain counters,
 //       which is what catches payments a browser settled directly, where the
 //       gateway was never in the loop. It reports what the CHAIN says, not what a
 //       client claimed.
 //
 // NOTHING IS MOCKED: with no TELEGRAM_BOT_TOKEN the feature reports itself
-// unavailable and the UI shows the three setup steps instead of a fake inbox.
+// unavailable and the UI shows the setup steps instead of a fake inbox.
 // ---------------------------------------------------------------------------
 
 import fs from "node:fs";
@@ -57,15 +57,15 @@ const musd = (wei) => {
     return String(wei ?? "—");
   }
 };
-// Local formatter rather than importing ethers for one call: this module is also
-// unit-tested offline, where dragging the SDK in buys nothing.
+
+// Local formatter rather than importing ethers for one call
 function ethersFormat(wei) {
   const v = BigInt(wei || 0);
   const s = v.toString().padStart(19, "0");
   return `${s.slice(0, -18)}.${s.slice(-18)}`.replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, ".0");
 }
 
-/** Render one event as a Telegram HTML message. Exported for the offline tests. */
+/** Render one event as a Telegram HTML message. Exported for tests. */
 export function renderEvent(ev = {}) {
   const kind = ev.kind || "info";
   const lines = [];
@@ -79,12 +79,14 @@ export function renderEvent(ev = {}) {
       }
       if (ev.txHash) lines.push(`<a href="${escapeHtml(ev.explorerTx || "")}">settlement tx</a>`);
       break;
+
     case "denial":
       lines.push(`⛔ <b>Payment refused</b>`);
       lines.push(`${escapeHtml(ev.reason || "policy")} — attempted ${escapeHtml(musd(ev.attempted))} MUSD`);
       if (ev.endpoint) lines.push(`for ${escapeHtml(ev.endpoint)}`);
       lines.push("Nothing was signed and nothing was spent.");
       break;
+
     case "limits_changed": {
       const c = ev.change || {};
       lines.push(`🎚 <b>Budget updated</b>`);
@@ -95,29 +97,56 @@ export function renderEvent(ev = {}) {
       if (c.txHash) lines.push(`tx <code>${escapeHtml(c.txHash.slice(0, 18))}…</code>`);
       break;
     }
+
     case "agent_frozen":
       lines.push(`🧊 <b>Agent frozen</b> — the treasury will refuse its payments until you unfreeze.`);
       break;
+
     case "agent_unfrozen":
       lines.push(`✅ <b>Agent re-enabled</b> — payments are allowed again.`);
       break;
-    case "faucet_claim":
-      lines.push(`🚰 <b>Faucet claim landed</b> — ${escapeHtml(musd(ev.amount))} MUSD is in your agent wallet.`);
-      lines.push("Spend it from the Spend page; the caps are already set on chain.");
+
+    case "agent_funded":
+      lines.push(`💰 <b>Agent wallet funded</b> — ${escapeHtml(musd(ev.amount))} MUSD added to your agent wallet.`);
+      lines.push("Spend it from the Spend page; your limits and daily cap apply automatically.");
       break;
+
     case "gas_drip":
       lines.push(`⛽ <b>Gas sent</b> — ${escapeHtml(String(ev.amountBtc ?? "0"))} BTC to your agent wallet.`);
       lines.push("That is enough to send the Permit2 approval that lets x402 payments settle.");
       if (ev.txHash) lines.push(`tx <code>${escapeHtml(String(ev.txHash).slice(0, 18))}…</code>`);
       break;
+
+    case "vault_deposit":
+      lines.push(`🏦 <b>Savings Vault Deposit</b> — ${escapeHtml(musd(ev.amount))} MUSD deposited into Earn.`);
+      if (ev.vault) lines.push(`Vault: <code>${escapeHtml(short(ev.vault, 6))}</code>`);
+      if (ev.balance) lines.push(`Total Vault Balance: ${escapeHtml(musd(ev.balance))} MUSD`);
+      if (ev.txHash) lines.push(`<a href="${escapeHtml(ev.explorerTx || "")}">transaction tx</a>`);
+      break;
+
+    case "vault_withdraw":
+      lines.push(`🏦 <b>Vault Withdrawal</b> — ${escapeHtml(musd(ev.amount))} MUSD withdrawn to agent wallet.`);
+      if (ev.reason) lines.push(`Reason: ${escapeHtml(ev.reason)}`);
+      if (ev.remaining !== undefined) lines.push(`Remaining in Vault: ${escapeHtml(musd(ev.remaining))} MUSD`);
+      if (ev.txHash) lines.push(`<a href="${escapeHtml(ev.explorerTx || "")}">transaction tx</a>`);
+      break;
+
+    case "collateral_deposit":
+      lines.push(`🛡 <b>Collateral Deposited</b> — ${escapeHtml(String(ev.amountBtc ?? "0"))} BTC collateral added.`);
+      if (ev.vault) lines.push(`Vault: <code>${escapeHtml(short(ev.vault, 6))}</code>`);
+      if (ev.txHash) lines.push(`<a href="${escapeHtml(ev.explorerTx || "")}">transaction tx</a>`);
+      break;
+
     case "cap_warning":
       lines.push(`⚠️ <b>${escapeHtml(ev.pct ?? 0)}% of today's cap used</b>`);
       lines.push(`${escapeHtml(musd(ev.remainingToday))} MUSD left of ${escapeHtml(musd(ev.dailyCap))} today.`);
       break;
+
     case "test":
       lines.push(`🔔 <b>Test alert</b> — AgentFloat can reach this chat.`);
       lines.push(`agent <code>${escapeHtml(short(ev.address, 6))}</code>`);
       break;
+
     default:
       lines.push(`ℹ️ ${escapeHtml(ev.title || kind)}`);
       if (ev.detail) lines.push(escapeHtml(ev.detail));
@@ -208,8 +237,6 @@ export function createTelegram({ token, botUsername, stateFile, log = () => {} }
       save(recordSend(s, address, event.kind, true));
       return { sent: true };
     } catch (e) {
-      // A blocked bot, a deleted chat or a Telegram outage must never break a
-      // payment or a budget change. Log it, record it, carry on.
       log(`  ⚠️  telegram send failed (${event.kind}): ${e.message}`);
       save(recordSend(s, address, event.kind, false, e.message));
       return { sent: false, reason: e.message };
@@ -221,8 +248,6 @@ export function createTelegram({ token, botUsername, stateFile, log = () => {} }
     if (!enabled) return { ok: false, error: "TELEGRAM_BOT_TOKEN is not set" };
     const code = crypto.randomBytes(5).toString("base64url").replace(/[-_]/g, "").slice(0, 8).toUpperCase();
     const s = load();
-    // One live code per address: a new code replaces the old, so a leaked link
-    // cannot be used after the user regenerates it.
     for (const [k, v] of Object.entries(s.pending)) {
       if (v.address?.toLowerCase() === String(address).toLowerCase()) delete s.pending[k];
     }
@@ -300,7 +325,7 @@ export function createTelegram({ token, botUsername, stateFile, log = () => {} }
         chat_id: chatId,
         text:
           `✅ Connected.\n\nAlerts for agent <code>${escapeHtml(pending.address)}</code> will arrive here: ` +
-          "payments, refusals, budget changes, faucet claims and a warning as your daily cap runs out.\n\n" +
+          "payments, refusals, budget changes, vault activity, wallet funding, and a warning as your daily cap runs out.\n\n" +
           "Send /stop to disconnect.",
         parse_mode: "HTML",
       }).catch(() => {});
@@ -339,8 +364,6 @@ export function createTelegram({ token, botUsername, stateFile, log = () => {} }
       }
       if (running) pollTimer = setTimeout(pollOnce, 300);
     } catch (e) {
-      // 409 = another process is polling with this token (a second gateway).
-      // That is a configuration error worth shouting about, not a transient one.
       const conflict = e.code === 409;
       log(`  ⚠️  telegram polling ${conflict ? "CONFLICT (409): another gateway is using this bot token" : "error"}: ${e.message}`);
       if (running) pollTimer = setTimeout(pollOnce, conflict ? 60_000 : 8_000);
@@ -348,17 +371,7 @@ export function createTelegram({ token, botUsername, stateFile, log = () => {} }
   }
 
   /**
-   * The watcher: catch what the gateway did not see. A browser-settled payment
-   * never passes through this process, but it does pass through the chain, so
-   * diff the on-chain counters for each subscribed agent.
-   *
-   * @param opts.getSnapshot async (address) => { payments, denials,
-   *   remainingToday, dailyCap, walletBalance, lifetimeFunded, active }
-   *   — counters only, so a tick costs ONE rpc call per subscriber.
-   * @param opts.getDetail async (address) => { lastPayment, lastDenial } — called
-   *   ONLY when a counter moved, because the interesting detail (the last payment
-   *   row, the denial reason) costs extra reads that would otherwise be wasted on
-   *   every tick for every subscriber.
+   * The watcher: catch what the gateway did not see on-chain.
    */
   function startWatcher({ getSnapshot, getDetail = null, intervalMs = 20_000 } = {}) {
     if (!enabled) return;
@@ -392,10 +405,9 @@ export function createTelegram({ token, botUsername, stateFile, log = () => {} }
                 await notify(address, { kind: "denial", ...detail.lastDenial });
               }
               if (funded && !paid) {
-                // Float arrived without a payment: a faucet claim or an operator
-                // release. Worth telling the user their wallet was funded.
+                // Float arrived without a payment: direct transfer or vault withdrawal
                 await notify(address, {
-                  kind: "faucet_claim",
+                  kind: "agent_funded",
                   amount: (BigInt(snap.lifetimeFunded || 0) - BigInt(prev.lifetimeFunded || 0)).toString(),
                 });
               }
@@ -404,7 +416,7 @@ export function createTelegram({ token, botUsername, stateFile, log = () => {} }
             if (!prev.active && snap.active) await notify(address, { kind: "agent_unfrozen" });
           }
 
-          // One threshold warning per UTC day, so a busy agent is not spammed.
+          // One threshold warning per UTC day
           const daily = BigInt(snap.dailyCap || 0);
           const left = BigInt(snap.remainingToday || 0);
           const day = new Date().toISOString().slice(0, 10);
@@ -457,10 +469,22 @@ export function createTelegram({ token, botUsername, stateFile, log = () => {} }
       ok: true,
       enabled,
       botUsername: botUsername || null,
-      alerts: ["payment", "denial", "limits_changed", "agent_frozen", "faucet_claim", "gas_drip", "cap_warning"],
+      alerts: [
+        "payment",
+        "denial",
+        "limits_changed",
+        "agent_frozen",
+        "agent_funded",
+        "gas_drip",
+        "cap_warning",
+        "vault_deposit",
+        "vault_withdraw",
+        "collateral_deposit",
+      ],
       note: enabled
         ? "Connect with a one-time code from the Alerts page."
         : "Create a bot with @BotFather, put the token in server/.env as TELEGRAM_BOT_TOKEN, and restart the gateway.",
     }),
   };
 }
+

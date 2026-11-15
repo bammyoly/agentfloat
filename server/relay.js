@@ -1,4 +1,5 @@
 // ---------------------------------------------------------------------------
+// server/relay.js
 // x402 relay — lets ANY user's own wallet pay ANY seller, CORS notwithstanding.
 //
 // THE PROBLEM THIS SOLVES
@@ -87,6 +88,12 @@ export function isPrivateAddress(ip) {
   const mapped = v.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
   if (mapped) v = mapped[1];
 
+  const mappedHex = v.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+  if (mappedHex) {
+    const hi = parseInt(mappedHex[1], 16), lo = parseInt(mappedHex[2], 16);
+    v = `${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`;
+  }
+
   if (v.includes(":")) {
     if (v === "::1" || v === "::") return true;         // loopback / unspecified
     if (v.startsWith("fc") || v.startsWith("fd")) return true; // unique-local
@@ -141,8 +148,11 @@ export async function assertRelayable(rawUrl, { selfOrigins = new Set(), allowli
 
   // Allowlist first: if the operator has named the services this gateway may
   // call, an unlisted host is refused without even resolving it.
-  if (allowlist.length) {
-    const ok = allowlist.some((p) => u.href.startsWith(p) || u.origin === p || u.origin.startsWith(p));
+  if (allowlist.length && !isSelf) {
+    const ok = allowlist.some((p) => {
+      const prefix = String(p).replace(/\/+$/, "");
+      return u.origin === prefix || u.href === prefix || u.href.startsWith(prefix + "/");
+    });
     if (!ok) throw new RelayError("not_allowlisted", `${u.origin} is not an approved service.`);
   }
 
@@ -449,3 +459,5 @@ function firstRequirement(v) {
   if (Array.isArray(v)) return v[0] || null;
   return v && typeof v === "object" ? v : null;
 }
+
+

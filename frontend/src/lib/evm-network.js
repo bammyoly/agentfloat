@@ -1,23 +1,17 @@
-// ---------------------------------------------------------------------------
-// EVM network plumbing for injected / Reown wallets.
-//
-// WHY THIS IS ITS OWN MODULE, WITH NO IMPORTS
-//   The requirement is behavioural: when a connected wallet is not on Mezo
-//   testnet, ask it to switch; when it does not know the chain at all, add it
-//   first and then switch. That is three RPC calls with wallet-specific error
-//   codes, and it is exactly the kind of logic that silently rots if it lives
-//   inside a React component. Kept import-free, it can be unit tested in plain
-//   Node against a fake provider — which is how this file is verified, since
-//   there is no browser here to click MetaMask in.
-//
-//   Chain facts are duplicated from src/contracts/chain.json on purpose. That
-//   file is a deploy artifact imported as JSON, which plain Node cannot load,
-//   and a unit-testable module must not drag the artifact graph in with it.
-//   `assertChainFactsAgree()` below is the guard: the wallet bridges call it at
-//   startup and warn if the two sources ever drift.
-// ---------------------------------------------------------------------------
+import { defineChain } from 'viem';
 
-/** Mezo testnet, chain id 31611. */
+
+export const mezoTestnet = defineChain({
+  id: 31611,
+  name: 'Mezo Testnet',
+  nativeCurrency: { name: 'Bitcoin', symbol: 'BTC', decimals: 18 },
+  rpcUrls: { default: { http: ['https://rpc.test.mezo.org'] } },
+  blockExplorers: {
+    default: { name: 'Mezo Explorer', url: 'https://explorer.test.mezo.org' },
+  },
+});
+
+
 export const MEZO_TESTNET_ID = 31611;
 
 /** `wallet_switchEthereumChain` / `eth_chainId` speak hex. 31611 === 0x7b7b. */
@@ -260,3 +254,5 @@ export function assertChainFactsAgree(viemChain, log = console.warn) {
   }
   return true;
 }
+
+
