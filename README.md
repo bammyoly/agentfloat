@@ -12,7 +12,9 @@ Built for the Mezo Buildathon (Wave 1 → Wave 2 Upgrade).
 
 | Resource | Target / Location |
 |---|---|
-| **Live Web Dashboard** | [https://agentfloat.vercel.app](https://agentfloat.vercel.app) |
+| **Live Web Dashboard** | [https://agentfloat-iota.vercel.app](https://agentfloat-iota.vercel.app) |
+| **Pitch Deck** | [https://docsend.com/v/2mt6q/agentfloat](https://docsend.com/v/2mt6q/agentfloat) |
+| **Video Walkthrough** | [https://youtu.be/9jvU-FmqMuQ](https://youtu.be/9jvU-FmqMuQ) |
 | **Verified Treasury Contract** | [`0xf10e9DdFB2aE67604f230b7CE4A1A560268EDf79`](https://explorer.test.mezo.org/address/0xf10e9DdFB2aE67604f230b7CE4A1A560268EDf79) |
 | **sMUSD Savings Vault** | [`0x6f461c68B2c5492C0F5CCEc5a264d692aA7A8e16`](https://explorer.test.mezo.org/address/0x6f461c68B2c5492C0F5CCEc5a264d692aA7A8e16) |
 | **Deployment Tx Hash** | [`0x6292eb5934627453328f36b63477bd39692434f920b2a28802ad0040d173a05b`](https://explorer.test.mezo.org/tx/0x6292eb5934627453328f36b63477bd39692434f920b2a28802ad0040d173a05b) |
@@ -300,4 +302,3 @@ npm run test:relay
 ## 📜 License
 
 MIT License. Developed for the Mezo Buildathon.
-```
