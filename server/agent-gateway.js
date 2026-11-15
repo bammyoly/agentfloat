@@ -1997,106 +1997,248 @@ function verifyTgRequest(body, expectedAction) {
 }
 
 // --- savings vault endpoints (Wave 2 yield + monetization) ----------------
+// Mezo sMUSD vault is a proxy → 0x92d12f... with a NON-ERC-4626 interface:
+//   deposit(uint256)  — caller sends MUSD, receives sMUSD (1:1)
+//   withdraw(uint256) — caller burns sMUSD, receives MUSD
+// No totalAssets(), no convertToAssets(), no receiver arg.
 const VAULT_ADDRESS = ctx?.chain?.savingsVault?.address || "0x6f461c68B2c5492C0F5CCEc5a264d692aA7A8e16";
+const FEE_BPS = 1500;
+const SWEEP_THRESHOLD = 50;
 
+const VAULT_ABI = [
+  "function deposit(uint256 amount)",
+  "function withdraw(uint256 amount)",
+  "function balanceOf(address) view returns (uint256)",
+  "function totalSupply() view returns (uint256)",
+];
+
+const MUSD_ABI = [
+  "function balanceOf(address) view returns (uint256)",
+  "function approve(address spender, uint256 amount) returns (bool)",
+  "function allowance(address owner, address spender) view returns (uint256)",
+];
+
+async function agentSigner(agentAddr) {
+  const pk = await getAgentPrivateKey(agentAddr);
+  const provider = new ethers.JsonRpcProvider(
+    ctx?.chain?.rpcUrl || "https://rpc.test.mezo.org",
+    Number(ctx?.chain?.chainId || 31611)
+  );
+  const wallet = new ethers.Wallet(pk, provider);
+  if (wallet.address.toLowerCase() !== agentAddr.toLowerCase()) {
+    throw new Error(`key mismatch: key yields ${wallet.address}, session says ${agentAddr}`);
+  }
+  return wallet;
+}
+
+async function waitReceipt(tx) {
+  const rc = await Promise.race([
+    tx.wait().catch(() => null),
+    new Promise((r) => setTimeout(() => r(null), RECEIPT_CONFIRM_MS)),
+  ]);
+  return { txHash: tx.hash, confirmed: Boolean(rc && rc.status === 1), block: rc?.blockNumber || null };
+}
+
+// --- /api/savings/status ---------------------------------------------------
 app.get("/api/savings/status", async (req, res) => {
   const agentAddr = req.query.agent || (req.session && req.session.agentAddress);
   try {
     const address = agentAddr ? ethers.getAddress(agentAddr) : null;
-    const balance = address
-      ? await getSavingsBalance(address, ctx?.chain?.rpcUrl || "https://rpc.test.mezo.org").catch(() => null)
-      : null;
+    const provider = readOnlyProvider();
+
+    if (!address || !provider || !ctx?.chain?.musd?.address) {
+      return res.json({
+        ok: true, agent: address, vault: VAULT_ADDRESS,
+        savings: { assets: "0", shares: "0", idle: "0", accruedFees: "0", feeBps: FEE_BPS, apy: "—", threshold: SWEEP_THRESHOLD },
+        config: sweepConfig(),
+      });
+    }
+
+    const musd = new ethers.Contract(ctx.chain.musd.address, MUSD_ABI, provider);
+    const vault = new ethers.Contract(VAULT_ADDRESS, VAULT_ABI, provider);
+
+    const [idleWei, sharesWei, totalSupply] = await Promise.all([
+      musd.balanceOf(address).catch(() => 0n),
+      vault.balanceOf(address).catch(() => 0n),
+      vault.totalSupply().catch(() => 0n),
+    ]);
+
+    // This vault is 1:1 sMUSD ↔ MUSD (no convertToAssets)
+    const assetsWei = sharesWei;
 
     res.json({
-      ok: true,
-      agent: address,
-      vault: VAULT_ADDRESS,
+      ok: true, agent: address, vault: VAULT_ADDRESS,
       savings: {
-        assets: balance?.assets || balance?.balance || "45.00",
-        shares: balance?.shares || "45.00",
-        idle: balance?.idle || "15.50",
-        accruedFees: "1.25",
-        feeBps: 1500, // 15% performance fee
-        apy: "5.2%",
-        threshold: 50,
+        assets: ethers.formatUnits(assetsWei, 18),
+        shares: ethers.formatUnits(sharesWei, 18),
+        idle: ethers.formatUnits(idleWei, 18),
+        accruedFees: "0",
+        feeBps: FEE_BPS,
+        apy: "—",
+        threshold: SWEEP_THRESHOLD,
+      },
+      onChain: {
+        totalSupply: ethers.formatUnits(totalSupply, 18),
       },
       config: sweepConfig(),
     });
   } catch (e) {
-    res.json({
-      ok: true,
-      vault: VAULT_ADDRESS,
-      savings: { assets: "45.00", shares: "45.00", idle: "15.50", accruedFees: "1.25", feeBps: 1500, apy: "5.2%", threshold: 50 },
-      config: sweepConfig(),
-    });
+    res.status(500).json({ ok: false, error: e.shortMessage || e.message, vault: VAULT_ADDRESS });
   }
 });
 
+// --- /api/savings/sweep ----------------------------------------------------
 app.post("/api/savings/sweep", requireSession, async (req, res) => {
   try {
     const agentAddr = req.session.agentAddress;
+    if (!agentAddr) return res.status(401).json({ ok: false, error: "no agent in session" });
+    if (!ctx?.chain?.musd?.address) return res.status(503).json({ ok: false, error: "no deployment" });
+
     const { amount } = req.body || {};
-    log(`  [savings] sweep requested for ${agentAddr} amount=${amount || "all"}`);
-    
-    // Trigger Telegram notification
+    const wallet = await agentSigner(agentAddr);
+
+    const gasBal = await wallet.provider.getBalance(agentAddr);
+    if (gasBal === 0n) {
+      return res.status(400).json({
+        ok: false, error: "agent wallet has no BTC for gas",
+        hint: "Send native BTC to the agent address, then retry.", agent: agentAddr,
+      });
+    }
+
+    const musd = new ethers.Contract(ctx.chain.musd.address, MUSD_ABI, wallet);
+    const vault = new ethers.Contract(VAULT_ADDRESS, VAULT_ABI, wallet);
+
+    const idleWei = await musd.balanceOf(agentAddr);
+    let sweepWei;
+    if (amount && amount !== "all") {
+      sweepWei = ethers.parseUnits(String(amount), 18);
+      if (sweepWei > idleWei) {
+        return res.status(400).json({
+          ok: false, error: `requested ${amount} MUSD but only ${ethers.formatUnits(idleWei, 18)} idle`,
+        });
+      }
+    } else {
+      const thresholdWei = ethers.parseUnits(String(SWEEP_THRESHOLD), 18);
+      sweepWei = idleWei > thresholdWei ? idleWei - thresholdWei : idleWei;
+    }
+
+    if (sweepWei === 0n) {
+      return res.json({
+        ok: true, action: "sweep", agent: agentAddr,
+        amount: "0", txHash: null,
+        note: "nothing to sweep — idle balance is zero or below threshold",
+      });
+    }
+
+    // Check allowance (agent already has max, but verify)
+    const allowance = await musd.allowance(agentAddr, VAULT_ADDRESS);
+    if (allowance < sweepWei) {
+      log(`  [savings] approving vault for ${agentAddr}`);
+      const approveTx = await musd.approve(VAULT_ADDRESS, ethers.MaxUint256);
+      await waitReceipt(approveTx);
+    }
+
+    log(`  [savings] sweeping ${ethers.formatUnits(sweepWei, 18)} MUSD → vault for ${agentAddr}`);
+    // Single-arg deposit — this is the key fix
+    const depositTx = await vault.deposit(sweepWei);
+    const receipt = await waitReceipt(depositTx);
+
     telegram.notify(agentAddr, {
-      kind: "vault_deposit",
-      amount: amount || "15.50",
-      vault: VAULT_ADDRESS,
+      kind: "vault_deposit", amount: ethers.formatUnits(sweepWei, 18),
+      vault: VAULT_ADDRESS, txHash: receipt.txHash,
     }).catch(() => {});
 
     res.json({
-      ok: true,
-      action: "sweep",
-      agent: agentAddr,
-      amount: amount || "15.50",
-      txHash: "0x6292eb5934627453328f36b63477bd39692434f920b2a28802ad0040d173a05b",
-      note: "MUSD swept into sMUSD savings vault successfully",
+      ok: true, action: "sweep", agent: agentAddr,
+      amount: ethers.formatUnits(sweepWei, 18),
+      txHash: receipt.txHash, confirmed: receipt.confirmed, block: receipt.block,
+      note: "MUSD deposited into sMUSD savings vault",
     });
   } catch (e) {
+    log(`  [savings] sweep error:`, e.shortMessage || e.message);
     res.status(500).json({ ok: false, error: e.shortMessage || e.message });
   }
 });
 
+// --- /api/savings/withdraw -------------------------------------------------
 app.post("/api/savings/withdraw", requireSession, async (req, res) => {
   try {
     const agentAddr = req.session.agentAddress;
-    const { amount } = req.body || {};
-    log(`  [savings] JIT withdrawal requested for ${agentAddr} amount=${amount || "all"}`);
+    if (!agentAddr) return res.status(401).json({ ok: false, error: "no agent in session" });
+    if (!ctx?.chain?.musd?.address) return res.status(503).json({ ok: false, error: "no deployment" });
 
-    // Trigger Telegram notification
+    const { amount } = req.body || {};
+    const wallet = await agentSigner(agentAddr);
+
+    const gasBal = await wallet.provider.getBalance(agentAddr);
+    if (gasBal === 0n) {
+      return res.status(400).json({
+        ok: false, error: "agent wallet has no BTC for gas", agent: agentAddr,
+      });
+    }
+
+    const vault = new ethers.Contract(VAULT_ADDRESS, VAULT_ABI, wallet);
+    const sharesWei = await vault.balanceOf(agentAddr);
+
+    let withdrawWei;
+    if (amount && amount !== "all") {
+      withdrawWei = ethers.parseUnits(String(amount), 18);
+    } else {
+      withdrawWei = sharesWei; // 1:1, withdraw all shares
+    }
+
+    if (withdrawWei === 0n || sharesWei === 0n) {
+      return res.json({
+        ok: true, action: "withdraw", agent: agentAddr,
+        amount: "0", txHash: null,
+        note: "nothing to withdraw — no vault shares",
+      });
+    }
+
+    if (withdrawWei > sharesWei) {
+      return res.status(400).json({
+        ok: false, error: `requested ${ethers.formatUnits(withdrawWei, 18)} but only ${ethers.formatUnits(sharesWei, 18)} sMUSD shares`,
+      });
+    }
+
+    log(`  [savings] withdrawing ${ethers.formatUnits(withdrawWei, 18)} sMUSD for ${agentAddr}`);
+    // Single-arg withdraw
+    const withdrawTx = await vault.withdraw(withdrawWei);
+    const receipt = await waitReceipt(withdrawTx);
+
     telegram.notify(agentAddr, {
-      kind: "vault_withdraw",
-      amount: amount || "10.00",
-      vault: VAULT_ADDRESS,
+      kind: "vault_withdraw", amount: ethers.formatUnits(withdrawWei, 18),
+      vault: VAULT_ADDRESS, txHash: receipt.txHash,
     }).catch(() => {});
 
     res.json({
-      ok: true,
-      action: "withdraw",
-      agent: agentAddr,
-      amount: amount || "10.00",
-      txHash: "0x891a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a",
-      note: "sMUSD retrieved to liquid MUSD float for JIT liquidity",
+      ok: true, action: "withdraw", agent: agentAddr,
+      amount: ethers.formatUnits(withdrawWei, 18),
+      txHash: receipt.txHash, confirmed: receipt.confirmed, block: receipt.block,
+      note: "sMUSD redeemed to liquid MUSD",
     });
   } catch (e) {
+    log(`  [savings] withdraw error:`, e.shortMessage || e.message);
     res.status(500).json({ ok: false, error: e.shortMessage || e.message });
   }
 });
 
+// --- /api/savings/collect-fees ---------------------------------------------
 app.post("/api/savings/collect-fees", requireSession, async (req, res) => {
   try {
     const agentAddr = req.session.agentAddress;
-    log(`  [savings] protocol performance fee collection requested by ${agentAddr}`);
+    if (!agentAddr) return res.status(401).json({ ok: false, error: "no agent in session" });
 
+    // This vault is 1:1 with no on-chain yield tracking (no totalAssets).
+    // Performance fees require a yield oracle or off-chain accounting.
+    // Return honest zero rather than a fake number.
     res.json({
-      ok: true,
-      action: "collect_fees",
-      collectedAmount: "1.25",
-      feeBps: 1500,
-      feeRecipient: ctx?.deployment?.owner || "0x76233C3D6c4D1A715Acad5D83031E686b2a88349",
-      txHash: "0x1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b",
-      note: "15% performance fee collected from sMUSD yield to protocol revenue",
+      ok: true, action: "collect_fees",
+      collectedAmount: "0",
+      feeBps: FEE_BPS,
+      feeRecipient: ctx?.deployment?.owner || TREASURY_ADDRESS || null,
+      txHash: null,
+      note: "sMUSD vault has no on-chain yield accounting — fees require off-chain calculation",
     });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.shortMessage || e.message });

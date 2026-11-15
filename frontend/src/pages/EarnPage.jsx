@@ -36,6 +36,8 @@ const GAS_BUFFER_BTC = 0.0001;
 const GAS_COMP = 200;          // MUSD, refunded from the GasPool on close
 const BORROW_FEE = 0.001;      // 0.1% estimate; the contract's getBorrowingFee is the authority
 const SAFE_RATIO = 200;        // target collateral ratio used by the "max safe" button
+const EXPLORER_BASE = "https://explorer.test.mezo.org";
+
 
 function crColor(pct) {
   if (pct >= 200) return "ok";
@@ -83,6 +85,7 @@ export default function EarnPage() {
   const [sweepAmt, setSweepAmt] = useState("");
   const [withdrawAmt, setWithdrawAmt] = useState("");
   const [vaultBusy, setVaultBusy] = useState(null); // "sweep" | "withdraw" | "collect"
+  const [lastTx, setLastTx] = useState(null);       // tx hash for explorer link in success banner
   const [targetRatio, setTargetRatio] = useState(200);
 
   // borrow more (existing trove)
@@ -314,58 +317,83 @@ export default function EarnPage() {
   }
 
 
-  async function handleSweep() {
-    setError(""); setSuccess(""); setVaultBusy("sweep");
-    try {
-      const r = await savingsSweep({
-        agent: agentAddress,
-        amount: sweepAmt || undefined,
-      });
-      if (!r.ok) throw new Error(r.error || "Sweep failed");
-      setSuccess(`Swept idle MUSD → sMUSD${r.txHash ? ` · ${r.txHash.slice(0, 10)}…` : ""}`);
-      setSweepAmt("");
-    } catch (e) {
-      setError(e.message || "Sweep failed");
-    } finally {
-      setVaultBusy(null);
-      refresh();
-      refreshApp();
+    async function handleSweep() {
+      setError(""); setSuccess(""); setLastTx(null); setVaultBusy("sweep");
+      try {
+        const r = await savingsSweep({
+          agent: agentAddress,
+          amount: sweepAmt || undefined,
+        });
+        if (!r.ok) throw new Error(r.error || r.hint || "Sweep failed");
+        if (!r.txHash) {
+          // Backend returned ok but nothing moved (zero idle, below threshold)
+          setSuccess(r.note || "Nothing to sweep — idle balance is zero or below threshold.");
+        } else {
+          setSuccess(
+            `Swept ${r.amount || "?"} MUSD → sMUSD vault` +
+            (r.confirmed ? " (confirmed)" : " (pending)")
+          );
+          setLastTx(r.txHash);
+        }
+        setSweepAmt("");
+      } catch (e) {
+        setError(e.message || "Sweep failed");
+      } finally {
+        setVaultBusy(null);
+        refresh();
+        refreshApp();
+      }
     }
-  }
 
-  async function handleWithdraw() {
-    setError(""); setSuccess(""); setVaultBusy("withdraw");
-    try {
-      const r = await savingsWithdraw({
-        agent: agentAddress,
-        amount: withdrawAmt || undefined,
-      });
-      if (!r.ok) throw new Error(r.error || "Retrieve failed");
-      setSuccess(`Retrieved MUSD from sMUSD (JIT)${r.txHash ? ` · ${r.txHash.slice(0, 10)}…` : ""}`);
-      setWithdrawAmt("");
-    } catch (e) {
-      setError(e.message || "Retrieve failed");
-    } finally {
-      setVaultBusy(null);
-      refresh();
-      refreshApp();
+    async function handleWithdraw() {
+      setError(""); setSuccess(""); setLastTx(null); setVaultBusy("withdraw");
+      try {
+        const r = await savingsWithdraw({
+          agent: agentAddress,
+          amount: withdrawAmt || undefined,
+        });
+        if (!r.ok) throw new Error(r.error || r.hint || "Retrieve failed");
+        if (!r.txHash) {
+          setSuccess(r.note || "Nothing to withdraw — no vault shares.");
+        } else {
+          setSuccess(
+            `Retrieved ${r.amount || "?"} MUSD from sMUSD vault` +
+            (r.confirmed ? " (confirmed)" : " (pending)")
+          );
+          setLastTx(r.txHash);
+        }
+        setWithdrawAmt("");
+      } catch (e) {
+        setError(e.message || "Retrieve failed");
+      } finally {
+        setVaultBusy(null);
+        refresh();
+        refreshApp();
+      }
     }
-  }
 
-  async function handleCollectFees() {
-    setError(""); setSuccess(""); setVaultBusy("collect");
-    try {
-      const r = await savingsCollectFees();
-      if (!r.ok) throw new Error(r.error || "Fee collection failed");
-      setSuccess(`Collected protocol performance fees${r.txHash ? ` · ${r.txHash.slice(0, 10)}…` : ""}`);
-    } catch (e) {
-      setError(e.message || "Fee collection failed");
-    } finally {
-      setVaultBusy(null);
-      refresh();
-      refreshApp();
+    async function handleCollectFees() {
+      setError(""); setSuccess(""); setLastTx(null); setVaultBusy("collect");
+      try {
+        const r = await savingsCollectFees();
+        if (!r.ok) throw new Error(r.error || r.hint || "Fee collection failed");
+        if (!r.txHash) {
+          setSuccess(r.note || "No fees to collect — no yield accrued yet.");
+        } else {
+          setSuccess(
+            `Collected ${r.collectedAmount || "?"} MUSD performance fee → treasury` +
+            (r.confirmed ? " (confirmed)" : " (pending)")
+          );
+          setLastTx(r.txHash);
+        }
+      } catch (e) {
+        setError(e.message || "Fee collection failed");
+      } finally {
+        setVaultBusy(null);
+        refresh();
+        refreshApp();
+      }
     }
-  }
 
   // --- guards ---
   if (!connected) {
@@ -449,7 +477,19 @@ export default function EarnPage() {
         <Note tone="bad" icon={CircleAlert} title="Something went wrong">{error}</Note>
       )}
       {success && (
-        <Note tone="ok" icon={CircleCheck} title="Success">{success}</Note>
+        <Note tone="ok" icon={CircleCheck} title="Success">
+          {success}
+          {lastTx && (
+            <a
+              href={`${EXPLORER_BASE}/tx/${lastTx}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="ml-2 inline-flex items-center gap-1 font-mono text-[12px] text-btc underline decoration-btc/40 underline-offset-2 hover:decoration-btc"
+            >
+              {lastTx.slice(0, 10)}… ↗
+            </a>
+          )}
+        </Note>
       )}
       {priceError && (
         <Note tone="bad" icon={AlertTriangle} title="BTC price feed unavailable">
@@ -1117,7 +1157,7 @@ export default function EarnPage() {
             {/* Manual controls for judges */}
             <div className="mt-4 space-y-3 border-t border-line-soft pt-4">
               <div className="text-[12.5px] font-semibold uppercase tracking-[0.06em] text-dim">
-                Yield ops (demo)
+                Yield Operaions
               </div>
 
               <div className="flex gap-2">

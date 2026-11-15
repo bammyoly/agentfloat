@@ -193,11 +193,14 @@ Network: Mezo Testnet (eip155:31611)
 
 Live: https://agentfloat-iota.vercel.app
 Pitch: https://docsend.com/v/2mt6q/agentfloat
-Video Walkthrough: 
+Video Walkthrough: https://youtu.be/9jvU-FmqMuQ
 
 AgentFloatTreasury Contract: 0xf10e9DdFB2aE67604f230b7CE4A1A560268EDf79 (Verified at block 16278029; Deploy tx: 0x6292eb5934627453328f36b63477bd39692434f920b2a28802ad0040d173a05b)
 
-Core Mezo Integrations: MUSD (0x118917a40FAF1CD7a13dB0Ef56C86De7973Ac503), sMUSD Savings Rate (0x6f461c68B2c5492C0F5CCEc5a264d692aA7A8e16), Permit2 (0x000000000022D473030F116dDEE9F6B43aC78BA3), BorrowerOperations, and the x402 facilitator (facilitator.vativ.io).
+Core Mezo Integrations: MUSD (0x118917a40FAF1CD7a13dB0Ef56C86De7973Ac503)
+sMUSD Savings Rate (0x6f461c68B2c5492C0F5CCEc5a264d692aA7A8e16)
+Permit2 (0x000000000022D473030F116dDEE9F6B43aC78BA3)
+BorrowerOperations, and the x402 facilitator (facilitator.vativ.io).
 
 Wave 2 Upgrades & Security Fixes
 Building on Wave 1's core treasury and Telegram alerting system, Wave 2 addresses all judge feedback with deep Mezo composability and hardened security:
