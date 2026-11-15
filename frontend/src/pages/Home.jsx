@@ -152,7 +152,7 @@ function Hero({ session }) {
       <div className="relative mx-auto max-w-[1000px] px-5 text-center">
         <div className="animate-rise mb-8 flex flex-wrap items-center justify-center gap-3" style={{ "--reveal-delay": "0ms" }}>
           <Badge tone="btc" className="px-3 py-1 text-[12.5px] shadow-sm">
-            <Dot tone="ok" className="mr-1" /> Live on {CHAIN.name} Testnet
+            <Dot tone="ok" className="mr-1" /> Live on {CHAIN.name}
           </Badge>
           <Badge tone="neutral" className="px-3 py-1 text-[12.5px]">Wave 2 Submission</Badge>
         </div>
@@ -194,14 +194,14 @@ function PrimaryCta({ session }) {
   if (session.configured && !session.user) {
     return (
       <Button size="lg" variant="primary" onClick={session.login} disabled={session.authenticating}>
-        {session.authenticating ? "Opening…" : "Sign in and fund agent"}
+        {session.authenticating ? "Opening…" : "Explore Agentfloat"}
       </Button>
     );
   }
   return (
     <Link to="/earn">
       <Button size="lg" variant="primary" icon={Coins} className="shadow-lg shadow-btc/20">
-        Fund Agent via BTC Troves
+        Go To Earn
       </Button>
     </Link>
   );
