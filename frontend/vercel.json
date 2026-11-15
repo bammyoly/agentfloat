@@ -5,6 +5,8 @@
   "installCommand": "npm install",
   "framework": "vite",
   "rewrites": [
+    { "source": "/api/:path*", "destination": "https://agentfloat-server.onrender.com/api/:path*" },
+    { "source": "/paid/:path*", "destination": "https://agentfloat-server.onrender.com/paid/:path*" },
     { "source": "/((?!api/|paid/).*)", "destination": "/index.html" }
   ]
 }
