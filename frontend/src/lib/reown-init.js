@@ -63,6 +63,11 @@ export function initReown(projectId) {
     themeMode: "dark",
     // WalletConnect telemetry off. Nothing about a demo user's wallet belongs
     // in a third-party analytics pipeline.
-    features: { analytics: false },
+    features: {
+      analytics: false,
+      email: false,
+      socials: false,
+      allWallets: false,
+    },
   });
 }
