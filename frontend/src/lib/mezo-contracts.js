@@ -2,7 +2,6 @@
 import { parseEther } from "viem";
 
 /* ── Canonical addresses (Mezo testnet chainId 31611) ──────────────── */
-// Verify these against the matsnet deployment in @mezo-org/musd-contracts.
 export const MUSD_ADDRESS =
   import.meta.env.VITE_MUSD_ADDRESS ||
   "0x118917a40FAF1CD7a13dB0Ef56C86De7973Ac503";
@@ -28,14 +27,12 @@ export const MCR = 110n; // Minimum Collateral Ratio (%)
 export const CCR = 150n; // Critical Collateral Ratio (%)
 export const GAS_COMPENSATION = parseEther("200"); // 200 MUSD, refunded on close
 export const MIN_NET_DEBT = parseEther("1800"); // 1 800 MUSD
-// Kept only so older imports do not break. Mezo's openTrove takes no fee cap.
 export const MAX_FEE_PCT = parseEther("0.05");
 
 /* ── Minimal ABIs ────────────────────────────────────── */
 
 export const borrowerOpsAbi = [
   {
-    // Mezo MUSD: no _maxFeePercentage argument.
     name: "openTrove",
     type: "function",
     stateMutability: "payable",
@@ -68,7 +65,6 @@ export const borrowerOpsAbi = [
     outputs: [],
   },
   {
-    // Borrow more MUSD against the existing trove (mints new debt).
     name: "withdrawMUSD",
     type: "function",
     stateMutability: "nonpayable",
@@ -80,7 +76,6 @@ export const borrowerOpsAbi = [
     outputs: [],
   },
   {
-    // Combined add collateral (msg.value) and change debt in ONE transaction.
     name: "adjustTrove",
     type: "function",
     stateMutability: "payable",
@@ -118,7 +113,6 @@ export const troveManagerAbi = [
     outputs: [{ name: "", type: "uint256" }],
   },
   {
-    // Order matters: collateral first, then principal and interest.
     name: "getEntireDebtAndColl",
     type: "function",
     stateMutability: "view",
@@ -135,6 +129,13 @@ export const troveManagerAbi = [
 ];
 
 export const priceFeedAbi = [
+  {
+    name: "fetchPrice",
+    type: "function",
+    stateMutability: "nonpayable",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
   {
     name: "lastGoodPrice",
     type: "function",
@@ -173,4 +174,3 @@ export const erc20Abi = [
     outputs: [{ name: "", type: "bool" }],
   },
 ];
-

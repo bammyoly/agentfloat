@@ -1009,13 +1009,8 @@ app.post("/api/quote", async (req, res) => {
   }
 });
 
-// ===========================================================================
-// Per-user x402 signer factory. Decrypts the user's agent key, builds a viem
-// account, registers the exact scheme. The key lives in memory only for the
-// duration of one HTTP request. Defined ABOVE /api/pay so a reader sees the
-// helper before the route that uses it.
-// ===========================================================================
-async function createAgentX402(agentAddress) {
+
+async function createAgentX402(agentAddress, boundOffer = null) {
   const privateKey = await getAgentPrivateKey(agentAddress);
   const account = privateKeyToAccount(privateKey);
   const client = new x402Client();
@@ -1024,7 +1019,31 @@ async function createAgentX402(agentAddress) {
     networks: [ctx ? ctx.chain.caip2 : "eip155:31611"],
     schemeOptions: { rpcUrl: ctx ? ctx.chain.rpcUrl : "https://rpc.test.mezo.org" },
   });
-  return { account, fetchWithPay: wrapFetchWithPayment(fetch, client) };
+
+  // Intercept the inner fetch to ensure the 402 quote hasn't changed between probe and sign
+  const boundFetch = async (input, init) => {
+    const res = await fetch(input, init);
+    if (res.status === 402 && boundOffer) {
+      const dec = decode402(res);
+      if (dec && dec.offer) {
+        const newOffer = dec.offer;
+        const amountTampered = String(newOffer.amount) !== String(boundOffer.amount);
+        const assetTampered = (newOffer.asset || "").toLowerCase() !== (boundOffer.asset || "").toLowerCase();
+        const payToTampered = (newOffer.payTo || "").toLowerCase() !== (boundOffer.payTo || "").toLowerCase();
+
+        if (amountTampered || assetTampered || payToTampered) {
+          throw new Error(
+            `[Quote Binding Violation] Seller altered the quote after policy check! ` +
+            `Checked: amount=${boundOffer.amount}, asset=${boundOffer.asset}, payTo=${boundOffer.payTo}. ` +
+            `Received: amount=${newOffer.amount}, asset=${newOffer.asset}, payTo=${newOffer.payTo}`
+          );
+        }
+      }
+    }
+    return res;
+  };
+
+  return { account, fetchWithPay: wrapFetchWithPayment(boundFetch, client) };
 }
 
 // ===========================================================================
@@ -1182,6 +1201,18 @@ app.post(
       } catch {
         startBlock = null;
       }
+
+       // Instantiate signer strictly bound to the checked offer (o)
+      let agentX402;
+      try {
+        agentX402 = await createAgentX402(agentAddr, o);
+      } catch (e) {
+        return res.status(503).json({
+          ok: false,
+          error: `could not load agent wallet: ${e.shortMessage || e.message}`,
+        });
+      }
+
 
       // ⑧ Sign & settle via per-user x402
       const paid = await agentX402.fetchWithPay(url, {
